@@ -1,3 +1,4 @@
+import pandas as pd
 import ccxt
 import time
 import threading
@@ -19,7 +20,7 @@ TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
-MAX_WORKERS = 10
+MAX_WORKERS = 5  # Reduced to avoid rate limits
 BATCH_DELAY = 2.5
 NUM_CHUNKS = 4
 CAPITAL = 10.0
@@ -62,16 +63,16 @@ def load_trades():
                 loaded = json.load(f)
                 open_trades = {k: v for k, v in loaded.items()}
             print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON in {TRADE_FILE}: {e}")
+        open_trades = {}
     except Exception as e:
         print(f"Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
     try:
-        all_closed_trades = []
-        if os.path.exists(CLOSED_TRADE_FILE):
-            with open(CLOSED_TRADE_FILE, 'r') as f:
-                all_closed_trades = json.load(f)
+        all_closed_trades = load_closed_trades()
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
             json.dump(all_closed_trades, f, default=str)
@@ -83,23 +84,34 @@ def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
             with open(CLOSED_TRADE_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+                else:
+                    print(f"Error: {CLOSED_TRADE_FILE} contains invalid data format")
+                    return []
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON in {CLOSED_TRADE_FILE}: {e}")
         return []
     except Exception as e:
         print(f"Error loading closed trades: {e}")
         return []
 
 # === TELEGRAM ===
-def send_telegram(msg):
+def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    try:
-        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-        print(f"Telegram sent: {msg}")
-        return response.get('result', {}).get('message_id')
-    except Exception as e:
-        print(f"Telegram error: {e}")
-        return None
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+            print(f"Telegram sent: {msg}")
+            return response.get('result', {}).get('message_id')
+        except Exception as e:
+            print(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+    return None
 
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
@@ -158,7 +170,7 @@ def calculate_adx(candles, period=14):
         high_diff = highs[i] - highs[i-1]
         low_diff = lows[i-1] - lows[i]
         plus_dm[i-1] = high_diff if high_diff > low_diff and high_diff > 0 else 0
-        minus_dm[i-1] = low_diff if low_diff > high_diff and low_diff > 0 else 0
+        minus_dm[i-1] = low_diff if low_diff > 0 else 0
         tr[i-1] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
     atr = np.mean(tr[-period:])
     if atr == 0:
@@ -177,7 +189,6 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
     dev = deviation / 100
 
     for i in range(depth, len(candles) - backstep):
-        # Check for swing low
         is_low = True
         for j in range(max(0, i - depth), min(len(candles), i + backstep + 1)):
             if j != i and lows[i] > lows[j]:
@@ -185,7 +196,7 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
                 break
         if is_low:
             if last_low is None or (direction == 1 and lows[i] < last_low[1]):
-                if last_high is None or (highs[i] - lows[i]) / lows[i] >= dev:
+                if last_low is None or (lows[i] != 0 and (highs[i] - lows[i]) / lows[i] >= dev):
                     last_low = (i, lows[i])
                     if direction == 1:
                         swing_points.append((last_high[0], last_high[1], 'high'))
@@ -194,7 +205,6 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
                     elif direction == 0:
                         direction = -1
 
-        # Check for swing high
         is_high = True
         for j in range(max(0, i - depth), min(len(candles), i + backstep + 1)):
             if j != i and highs[i] < highs[j]:
@@ -202,18 +212,18 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
                 break
         if is_high:
             if last_high is None or (direction == -1 and highs[i] > last_high[1]):
-                if last_low is None or (highs[i] - lows[i]) / lows[i] >= dev:
+                if last_low is None or (lows[i] != 0 and (highs[i] - lows[i]) / lows[i] >= dev):
                     last_high = (i, highs[i])
                     if direction == -1:
                         swing_points.append((last_low[0], last_low[1], 'low'))
                         swing_points.append((last_high[0], last_high[1], 'high'))
                         direction = 1
                     elif direction == 0:
+singular
                         direction = 1
 
     return swing_points
 
-# === EMA ===
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
     if len(closes) < period:
@@ -321,12 +331,24 @@ def check_tp_sl():
                             f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
                             f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
                             f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
+                            f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi, 'big_candle_rsi_status': trade['big_candle_rsi_status'],
+                            'zigzag_status': trade['zigzag_status'],
+                            'zigzag_price': trade['zigzag_price']
+                        }
+                        closed_trades.append(closed_trade)
+                        save_closed_trades(closed_trade)
+                        ema_status = trade['ema_status']
+                        new_msg = (
+                            f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                            f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
+                            f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                            f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
                             f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
                             f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
                             f"Zig Zag - {trade['zigzag_status']}\n"
                             f"entry - {trade['entry']}\n"
-                            f"tp - {trade['tp']}: {'✅' if 'TP' in hit else ''}\n"
-                            f"sl - {trade['sl']:.4f}: {'❌' if 'SL' in hit else ''}\n"
+                            f"tp - {trade['tp']}\n"
+                            f"sl - {trade['sl']:.4f}\n"
                             f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                         )
                         edit_telegram_message(trade['msg_id'], new_msg)
@@ -354,7 +376,7 @@ def process_symbol(symbol, alert_queue):
         ema9 = calculate_ema(candles, period=9)
         rsi = calculate_rsi(candles, period=RSI_PERIOD)
         adx = calculate_adx(candles, period=ADX_PERIOD)
-        big_candle_rsi = calculate_rsi(candles[:-3], period=RSI_PERIOD)  # RSI for big candle (4 candles back)
+        big_candle_rsi = calculate_rsi(candles[:-3], period=RSI_PERIOD)
         swing_points = calculate_zigzag(candles, depth=ZIGZAG_DEPTH, deviation=ZIGZAG_DEVIATION, backstep=ZIGZAG_BACKSTEP)
         if ema21 is None or ema9 is None or rsi is None or adx is None or big_candle_rsi is None:
             return
@@ -373,7 +395,6 @@ def process_symbol(symbol, alert_queue):
         adx_category = 'Strong Trend' if adx >= 25 else 'Weak Trend'
         big_candle_rsi_status = 'High Momentum' if (big_candle_rsi > 75 or big_candle_rsi < 25) else 'Normal'
 
-        # Check for Zig Zag swing alignment
         zigzag_status = 'No Swing'
         zigzag_price = None
         for point in swing_points:
@@ -388,7 +409,7 @@ def process_symbol(symbol, alert_queue):
                 break
 
         if detect_rising_three(candles):
-            sl = entry_price * (1 - 0.015)  # Fixed 1.5% SL
+            sl = entry_price * (1 - 0.015)
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
@@ -420,7 +441,7 @@ def process_symbol(symbol, alert_queue):
             alert_queue.put((symbol, msg, ema_status, category, rsi, rsi_category, adx, adx_category, big_candle_rsi, big_candle_rsi_status, zigzag_status, zigzag_price))
 
         elif detect_falling_three(candles):
-            sl = entry_price * (1 + 0.015)  # Fixed 1.5% SL
+            sl = entry_price * (1 + 0.015)
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
@@ -452,6 +473,7 @@ def process_symbol(symbol, alert_queue):
             alert_queue.put((symbol, msg, ema_status, category, rsi, rsi_category, adx, adx_category, big_candle_rsi, big_candle_rsi_status, zigzag_status, zigzag_price))
 
     except ccxt.RateLimitExceeded:
+        print(f"Rate limit exceeded for {symbol}, retrying after delay")
         time.sleep(5)
     except Exception as e:
         print(f"Error on {symbol}: {e}")
@@ -462,6 +484,163 @@ def process_batch(symbols, alert_queue):
         future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
         for future in as_completed(future_to_symbol):
             future.result()
+
+# === CSV EXPORT ===
+def export_to_csv():
+    try:
+        # Load closed trades
+        all_closed_trades = load_closed_trades()
+        
+        # Prepare closed trades DataFrame
+        closed_trades_df = pd.DataFrame(all_closed_trades)
+        if not closed_trades_df.empty:
+            closed_trades_df = closed_trades_df[[
+                'symbol', 'pnl', 'pnl_pct', 'category', 'ema_status', 'rsi', 
+                'rsi_category', 'adx', 'adx_category', 'big_candle_rsi', 
+                'big_candle_rsi_status', 'zigzag_status', 'zigzag_price'
+            ]]
+            closed_trades_df['ema_status'] = closed_trades_df['ema_status'].apply(lambda x: str(x))
+        
+        # Prepare open trades DataFrame
+        open_trades_df = pd.DataFrame([
+            {
+                'symbol': sym,
+                'side': trade['side'],
+                'entry': trade['entry'],
+                'tp': trade['tp'],
+                'sl': trade['sl'],
+                'category': trade['category'],
+                'ema_status': str(trade['ema_status']),
+                'rsi': trade['rsi'],
+                'rsi_category': trade['rsi_category'],
+                'adx': trade['adx'],
+                'adx_category': trade['adx_category'],
+                'big_candle_rsi': trade['big_candle_rsi'],
+                'big_candle_rsi_status': trade['big_candle_rsi_status'],
+                'zigzag_status': trade['zigzag_status'],
+                'zigzag_price': trade['zigzag_price']
+            } for sym, trade in open_trades.items()
+        ])
+        
+        # Prepare summary metrics
+        two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
+        one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
+        two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
+        adx_low_overbought = [t for t in all_closed_trades if t['adx_category'] == 'Weak Trend' and t['rsi_category'] == 'Overbought']
+        adx_low_neutral = [t for t in all_closed_trades if t['adx_category'] == 'Weak Trend' and t['rsi_category'] == 'Neutral']
+        adx_low_oversold = [t for t in all_closed_trades if t['adx_category'] == 'Weak Trend' and t['rsi_category'] == 'Oversold']
+        adx_high_overbought = [t for t in all_closed_trades if t['adx_category'] == 'Strong Trend' and t['rsi_category'] == 'Overbought']
+        adx_high_neutral = [t for t in all_closed_trades if t['adx_category'] == 'Strong Trend' and t['rsi_category'] == 'Neutral']
+        adx_high_oversold = [t for t in all_closed_trades if t['adx_category'] == 'Strong Trend' and t['rsi_category'] == 'Oversold']
+        rsi_high_rising = [t for t in all_closed_trades if t['big_candle_rsi_status'] == 'High Momentum' and t['big_candle_rsi'] > 75]
+        rsi_low_falling = [t for t in all_closed_trades if t['big_candle_rsi_status'] == 'High Momentum' and t['big_candle_rsi'] < 25]
+        zigzag_swing_low = [t for t in all_closed_trades if 'Swing Low' in t['zigzag_status']]
+        zigzag_swing_high = [t for t in all_closed_trades if 'Swing High' in t['zigzag_status']]
+        
+        def get_category_metrics(trades):
+            count = len(trades)
+            wins = sum(1 for t in trades if t['pnl'] > 0)
+            losses = sum(1 for t in trades if t['pnl'] < 0)
+            pnl = sum(t['pnl'] for t in trades)
+            pnl_pct = sum(t['pnl_pct'] for t in trades)
+            win_rate = (wins / count * 100) if count > 0 else 0.00
+            return {
+                'Count': count,
+                'Wins': wins,
+                'Losses': losses,
+                'PnL ($)': round(pnl, 2),
+                'PnL (%)': round(pnl_pct, 2),
+                'Win Rate (%)': round(win_rate, 2)
+            }
+        
+        # Summary metrics
+        summary_data = {
+            'Category': [
+                'Two Green Ticks',
+                'One Green, One Caution',
+                'Two Cautions',
+                'ADX < 25, RSI Overbought',
+                'ADX < 25, RSI Neutral',
+                'ADX < 25, RSI Oversold',
+                'ADX ≥ 25, RSI Overbought',
+                'ADX ≥ 25, RSI Neutral',
+                'ADX ≥ 25, RSI Oversold',
+                'Big Candle RSI > 75 (Rising)',
+                'Big Candle RSI < 25 (Falling)',
+                'Zig Zag Swing Low (Rising)',
+                'Zig Zag Swing High (Falling)'
+            ],
+            **{k: [
+                get_category_metrics(two_green_trades)[k],
+                get_category_metrics(one_green_trades)[k],
+                get_category_metrics(two_cautions_trades)[k],
+                get_category_metrics(adx_low_overbought)[k],
+                get_category_metrics(adx_low_neutral)[k],
+                get_category_metrics(adx_low_oversold)[k],
+                get_category_metrics(adx_high_overbought)[k],
+                get_category_metrics(adx_high_neutral)[k],
+                get_category_metrics(adx_high_oversold)[k],
+                get_category_metrics(rsi_high_rising)[k],
+                get_category_metrics(rsi_low_falling)[k],
+                get_category_metrics(zigzag_swing_low)[k],
+                get_category_metrics(zigzag_swing_high)[k]
+            ] for k in ['Count', 'Wins', 'Losses', 'PnL ($)', 'PnL (%)', 'Win Rate (%)']}
+        }
+        summary_df = pd.DataFrame(summary_data)
+        
+        # Calculate total and cumulative PnL
+        total_pnl = sum(t['pnl'] for t in all_closed_trades)
+        total_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades)
+        if all_closed_trades:
+            symbol_pnl = {}
+            for trade in all_closed_trades:
+                sym = trade['symbol']
+                symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
+            top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
+            top_symbol_name, top_symbol_pnl = top_symbol
+            top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name) if top_symbol_name else 0
+        else:
+            top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
+        
+        # Additional summary metrics
+        additional_summary = pd.DataFrame({
+            'Metric': ['Total PnL ($)', 'Total PnL (%)', 'Top Symbol', 'Top Symbol PnL ($)', 'Top Symbol PnL (%)', 'Open Trades'],
+            'Value': [
+                round(total_pnl, 2),
+                round(total_pnl_pct, 2),
+                top_symbol_name or 'None',
+                round(top_symbol_pnl, 2),
+                round(top_symbol_pnl_pct, 2),
+                len(open_trades)
+            ]
+        })
+        
+        # Write to CSV files
+        timestamp = get_ist_time().strftime("%Y%m%d_%H%M%S")
+        if not closed_trades_df.empty:
+            closed_trades_file = f'closed_trades_{timestamp}.csv'
+            closed_trades_df.to_csv(closed_trades_file, index=False)
+            print(f"Closed trades CSV saved: {closed_trades_file}")
+            send_telegram(f"📊 Closed trades CSV generated: {closed_trades_file}")
+        
+        if not open_trades_df.empty:
+            open_trades_file = f'open_trades_{timestamp}.csv'
+            open_trades_df.to_csv(open_trades_file, index=False)
+            print(f"Open trades CSV saved: {open_trades_file}")
+            send_telegram(f"📊 Open trades CSV generated: {open_trades_file}")
+        
+        summary_file = f'summary_{timestamp}.csv'
+        summary_df.to_csv(summary_file, index=False)
+        additional_summary.to_csv(summary_file, mode='a', index=False, header=True)
+        print(f"Summary CSV saved: {summary_file}")
+        send_telegram(f"📊 Summary CSV generated: {summary_file}")
+        
+    except (PermissionError, OSError) as e:
+        print(f"File access error in CSV export: {e}")
+        send_telegram(f"❌ File access error generating CSV files: {e}")
+    except Exception as e:
+        print(f"Unexpected error exporting to CSV: {e}")
+        send_telegram(f"❌ Unexpected error generating CSV files: {e}")
 
 # === SCAN LOOP ===
 def scan_loop():
@@ -477,7 +656,7 @@ def scan_loop():
     def send_alerts():
         while True:
             try:
-                symbol, msg, ema_status, category, rsi, rsi_category, adx, adx_category, big_candle_rsi, big_candle_rsi_status, zigzag_status, zigzag_price = alert_queue.get(timeout=1)
+                symbol, msg, ema_status, category, rsi, rsi_category, adx, adx_category, big_candle_rsi, big_candle_rsi_status, zigzag_status, zigzag_price = alert_queue.get(timeout=5)
                 mid = send_telegram(msg)
                 if mid and symbol not in open_trades:
                     trade = {
@@ -568,12 +747,8 @@ def scan_loop():
         zigzag_low_count, zigzag_low_tp, zigzag_low_sl, zigzag_low_pnl, zigzag_low_pnl_pct, zigzag_low_win_rate = get_category_metrics(zigzag_swing_low)
         zigzag_high_count, zigzag_high_tp, zigzag_high_sl, zigzag_high_pnl, zigzag_high_pnl_pct, zigzag_high_win_rate = get_category_metrics(zigzag_swing_high)
 
-        total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
-        total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
-        cumulative_pnl = total_pnl
-        cumulative_pnl_pct = total_pnl_pct
-
-        # Find top symbol
+        total_pnl = sum(t['pnl'] for t in all_closed_trades)
+        total_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades)
         if all_closed_trades:
             symbol_pnl = {}
             for trade in all_closed_trades:
@@ -581,7 +756,7 @@ def scan_loop():
                 symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
             top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
             top_symbol_name, top_symbol_pnl = top_symbol
-            top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name)
+            top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name) if top_symbol_name else 0
         else:
             top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
 
@@ -610,15 +785,18 @@ def scan_loop():
             f"- Zig Zag Swing High (Falling Three):\n"
             f"  - Total Trades: {zigzag_high_count} trades (TP Hits: {zigzag_high_tp}, SL Hits: {zigzag_high_sl}), PnL: ${zigzag_high_pnl:.2f} ({zigzag_high_pnl_pct:.2f}%), Win Rate: {zigzag_high_win_rate:.2f}%\n"
             f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
-            f"📈 Cumulative PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
+            f"📈 Cumulative PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
             f"🏆 Top Symbol: {top_symbol_name or 'None'} with ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
             f"🔄 Open Trades: {num_open}"
         )
         send_telegram(summary_msg)
         send_telegram(f"Number of open trades after scan: {num_open}")
 
-        # Reset closed_trades after generating the summary
-        closed_trades = []
+        # Export to CSV
+        export_to_csv()
+
+        # Do not reset closed_trades to preserve in-memory trades for next cycle
+        # closed_trades = []
 
 # === FLASK ===
 @app.route('/')
