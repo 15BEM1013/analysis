@@ -3,7 +3,8 @@ import ccxt
 import time
 import threading
 import requests
-from flask import Flask
+from flask import Flask, send_file
+import glob
 from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,8 +27,9 @@ NUM_CHUNKS = 4
 CAPITAL = 10.0
 SL_PCT = 1.0 / 100
 TP_SL_CHECK_INTERVAL = 30
-TRADE_FILE = 'open_trades.json'
-CLOSED_TRADE_FILE = 'closed_trades.json'
+TRADE_FILE = '/data/open_trades.json'
+CLOSED_TRADE_FILE = '/data/closed_trades.json'
+CLOSED_TRADE_CSV = '/data/closed_trades.csv'
 RSI_PERIOD = 14
 ADX_PERIOD = 14
 ZIGZAG_DEPTH = 12
@@ -49,11 +51,13 @@ def get_ist_time():
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
+        os.makedirs(os.path.dirname(TRADE_FILE), exist_ok=True)
         with open(TRADE_FILE, 'w') as f:
             json.dump(open_trades, f, default=str)
         print(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
         print(f"Error saving trades: {e}")
+        send_telegram(f"❌ Error saving trades to {TRADE_FILE}: {e}")
 
 def load_trades():
     global open_trades
@@ -72,6 +76,7 @@ def load_trades():
 
 def save_closed_trades(closed_trade):
     try:
+        os.makedirs(os.path.dirname(CLOSED_TRADE_FILE), exist_ok=True)
         all_closed_trades = load_closed_trades()
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
@@ -79,6 +84,7 @@ def save_closed_trades(closed_trade):
         print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
         print(f"Error saving closed trades: {e}")
+        send_telegram(f"❌ Error saving closed trades to {CLOSED_TRADE_FILE}: {e}")
 
 def load_closed_trades():
     try:
@@ -125,7 +131,8 @@ def edit_telegram_message(message_id, new_text):
 # === INIT ===
 exchange = ccxt.binance({
     'options': {'defaultType': 'future'},
-    'proxies': proxies
+    'proxies': proxies,
+    'enableRateLimit': True
 })
 app = Flask(__name__)
 
@@ -219,7 +226,6 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
                         swing_points.append((last_high[0], last_high[1], 'high'))
                         direction = 1
                     elif direction == 0:
-singular
                         direction = 1
 
     return swing_points
@@ -310,6 +316,10 @@ def check_tp_sl():
                         profit = CAPITAL * pnl / 100
                         closed_trade = {
                             'symbol': sym,
+                            'side': trade['side'],
+                            'entry': trade['entry'],
+                            'tp': trade['tp'],
+                            'sl': trade['sl'],
                             'pnl': profit,
                             'pnl_pct': pnl,
                             'category': trade['category'],
@@ -321,19 +331,8 @@ def check_tp_sl():
                             'big_candle_rsi': trade['big_candle_rsi'],
                             'big_candle_rsi_status': trade['big_candle_rsi_status'],
                             'zigzag_status': trade['zigzag_status'],
-                            'zigzag_price': trade['zigzag_price']
-                        }
-                        closed_trades.append(closed_trade)
-                        save_closed_trades(closed_trade)
-                        ema_status = trade['ema_status']
-                        new_msg = (
-                            f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                            f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                            f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
-                            f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
-                            f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi, 'big_candle_rsi_status': trade['big_candle_rsi_status'],
-                            'zigzag_status': trade['zigzag_status'],
-                            'zigzag_price': trade['zigzag_price']
+                            'zigzag_price': trade['zigzag_price'],
+                            'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
                         }
                         closed_trades.append(closed_trade)
                         save_closed_trades(closed_trade)
@@ -358,7 +357,7 @@ def check_tp_sl():
                     print(f"TP/SL check error on {sym}: {e}")
             time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
-            print(f"TP/SL loop error: {e}")
+            print(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
@@ -495,11 +494,18 @@ def export_to_csv():
         closed_trades_df = pd.DataFrame(all_closed_trades)
         if not closed_trades_df.empty:
             closed_trades_df = closed_trades_df[[
-                'symbol', 'pnl', 'pnl_pct', 'category', 'ema_status', 'rsi', 
-                'rsi_category', 'adx', 'adx_category', 'big_candle_rsi', 
-                'big_candle_rsi_status', 'zigzag_status', 'zigzag_price'
+                'symbol', 'side', 'entry', 'tp', 'sl', 'pnl', 'pnl_pct', 'category',
+                'ema_status', 'rsi', 'rsi_category', 'adx', 'adx_category',
+                'big_candle_rsi', 'big_candle_rsi_status', 'zigzag_status', 'zigzag_price', 'close_time'
             ]]
             closed_trades_df['ema_status'] = closed_trades_df['ema_status'].apply(lambda x: str(x))
+            # Append to single closed_trades.csv
+            os.makedirs(os.path.dirname(CLOSED_TRADE_CSV), exist_ok=True)
+            mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
+            header = not os.path.exists(CLOSED_TRADE_CSV)
+            closed_trades_df.to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
+            print(f"Closed trades appended to {CLOSED_TRADE_CSV}")
+            send_telegram(f"📊 Closed trades appended to {CLOSED_TRADE_CSV}")
         
         # Prepare open trades DataFrame
         open_trades_df = pd.DataFrame([
@@ -615,21 +621,15 @@ def export_to_csv():
             ]
         })
         
-        # Write to CSV files
+        # Write open trades and summary to timestamped CSV files
         timestamp = get_ist_time().strftime("%Y%m%d_%H%M%S")
-        if not closed_trades_df.empty:
-            closed_trades_file = f'closed_trades_{timestamp}.csv'
-            closed_trades_df.to_csv(closed_trades_file, index=False)
-            print(f"Closed trades CSV saved: {closed_trades_file}")
-            send_telegram(f"📊 Closed trades CSV generated: {closed_trades_file}")
-        
         if not open_trades_df.empty:
-            open_trades_file = f'open_trades_{timestamp}.csv'
+            open_trades_file = f'/data/open_trades_{timestamp}.csv'
             open_trades_df.to_csv(open_trades_file, index=False)
             print(f"Open trades CSV saved: {open_trades_file}")
             send_telegram(f"📊 Open trades CSV generated: {open_trades_file}")
         
-        summary_file = f'summary_{timestamp}.csv'
+        summary_file = f'/data/summary_{timestamp}.csv'
         summary_df.to_csv(summary_file, index=False)
         additional_summary.to_csv(summary_file, mode='a', index=False, header=True)
         print(f"Summary CSV saved: {summary_file}")
@@ -796,18 +796,38 @@ def scan_loop():
         export_to_csv()
 
         # Do not reset closed_trades to preserve in-memory trades for next cycle
-        # closed_trades = []
 
 # === FLASK ===
 @app.route('/')
 def home():
     return "✅ Rising & Falling Three Pattern Bot is Live!"
 
+@app.route('/download/<filename>')
+def download_file(filename):
+    try:
+        file_path = os.path.join('/data', filename)
+        if not os.path.exists(file_path):
+            return f"File {filename} not found", 404
+        return send_file(file_path, as_attachment=True)
+    except Exception as e:
+        return f"Error downloading file: {str(e)}", 500
+
+@app.route('/list_files')
+def list_files():
+    try:
+        files = glob.glob('/data/*.csv')
+        if not files:
+            return "No CSV files found", 404
+        file_list = "<br>".join([os.path.basename(f) for f in files])
+        return f"Available CSV files:<br>{file_list}"
+    except Exception as e:
+        return f"Error listing files: {str(e)}", 500
+
 # === RUN ===
 def run_bot():
     load_trades()
     num_open = len(open_trades)
-    startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
+    startup_msg = f"BOT STARTED at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
     threading.Thread(target=scan_loop, daemon=True).start()
     port = int(os.getenv('PORT', 8080))
