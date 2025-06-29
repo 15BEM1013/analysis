@@ -6,3 +6,4 @@ python-dateutil
 pytz
 numpy
 python-telegram-bot
+pip install pandas
