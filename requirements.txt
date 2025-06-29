@@ -1,4 +1,6 @@
+gunicorn
 ccxt
-Flask
 requests
+flask
+python-dateutil
 pytz
