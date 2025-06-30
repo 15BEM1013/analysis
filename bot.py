@@ -22,13 +22,13 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
 REDIS_PORT = os.getenv('REDIS_PORT', 6379)
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
 TIMEFRAME = '15m'
-MIN_BIG_BODY_PCT = 0.5
-MAX_SMALL_BODY_PCT = 1.5
-MIN_LOWER_WICK_PCT = 10.0
-MAX_WORKERS = 3
-BATCH_DELAY = 5.0
+MIN_BIG_BODY_PCT = 1.0
+MAX_SMALL_BODY_PCT = 1.0
+MIN_LOWER_WICK_PCT = 20.0
+MAX_WORKERS = 10
+BATCH_DELAY = 2.5
 CAPITAL = 10.0
-SL_PCT = 1.0 / 100
+SL_PCT = 1.5 / 100
 TP_SL_CHECK_INTERVAL = 30
 CLOSED_TRADE_CSV = '/tmp/closed_trades.csv'
 RSI_PERIOD = 14
@@ -88,15 +88,12 @@ def load_trades():
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = load_closed_trades()
-        # Generate a unique trade ID based on symbol, close_time, entry, and pnl
         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
-        # Check if trade_id already exists in Redis
         if redis_client.sismember('exported_trades', trade_id):
             print(f"Trade {trade_id} already closed, skipping")
             return
         all_closed_trades.append(closed_trade)
         redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
-        # Mark trade as closed
         redis_client.sadd('exported_trades', trade_id)
         print(f"Closed trade saved to Redis: {trade_id}")
         send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
@@ -109,7 +106,6 @@ def load_closed_trades():
         data = redis_client.get('closed_trades')
         if data:
             trades = json.loads(data)
-            # Remove duplicates based on symbol, close_time, entry, and pnl
             unique_trades = []
             seen_ids = set()
             for trade in trades:
@@ -267,7 +263,7 @@ def calculate_adx(candles, period=14):
     plus_di = 100 * np.mean(plus_dm[-period:]) / atr
     minus_di = 100 * np.mean(minus_dm[-period:]) / atr
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) != 0 else 0
-    return 100 * dx
+    return  silk 100 * dx
 
 def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
     highs = np.array([c[2] for c in candles])
@@ -451,7 +447,6 @@ def check_tp_sl():
                 except Exception as e:
                     print(f"TP/SL check error on {sym}: {e}")
                     send_telegram(f"❌ TP/SL check error on {sym}: {e}")
-            # Remove closed trades outside the loop to avoid modifying dict during iteration
             for sym in trades_to_remove:
                 del open_trades[sym]
             if trades_to_remove:
@@ -472,7 +467,6 @@ def export_to_csv():
         total_pnl = closed_trades_df['pnl'].sum() if not closed_trades_df.empty else 0.0
         total_trades = len(closed_trades_df) if not closed_trades_df.empty else 0
         if not closed_trades_df.empty:
-            # Filter out already exported trades
             exported_trades = redis_client.smembers('exported_trades') or set()
             closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time'] + ':' + closed_trades_df['entry'].astype(str) + ':' + closed_trades_df['pnl'].astype(str)
             new_trades_df = closed_trades_df[~closed_trades_df['trade_id'].isin(exported_trades)]
@@ -483,7 +477,6 @@ def export_to_csv():
                 print(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
                 send_telegram(f"📊 Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
                 send_csv_to_telegram(CLOSED_TRADE_CSV)
-                # Update exported trades in Redis
                 for trade_id in new_trades_df['trade_id']:
                     redis_client.sadd('exported_trades', trade_id)
             else:
@@ -492,7 +485,6 @@ def export_to_csv():
         else:
             print("No closed trades to export")
             send_telegram("📊 No closed trades to export")
-        # Send simplified PnL summary
         summary_msg = (
             f"🔍 Scan Completed at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"📊 Closed Trades: {total_trades}\n"
@@ -514,6 +506,12 @@ def process_symbol(symbol, alert_queue):
             if attempt < 2 and candles[-1][0] > candles[-2][0]:
                 break
             time.sleep(1)
+
+        signal_time = candles[-2][0]
+        if (symbol, 'rising') in sent_signals and sent_signals[(symbol, 'rising')] == signal_time:
+            return
+        if (symbol, 'falling') in sent_signals and sent_signals[(symbol, 'falling')] == signal_time:
+            return
 
         ema21 = calculate_ema(candles, period=21)
         ema9 = calculate_ema(candles, period=9)
@@ -557,9 +555,9 @@ def process_symbol(symbol, alert_queue):
                 print(f"{symbol}: No pattern detected. Reasons: {', '.join(reasons)}")
             return
 
-        price = candles[-1][4]
+        entry = candles[-2][4]
         ema_status = {
-            'price_ema21': '✅' if (rising and price > ema21) or (falling and price < ema21) else '⚠️',
+            'price_ema21': '✅' if (rising and entry > ema21) or (falling and entry < ema21) else '⚠️',
             'ema9_ema21': '✅' if (rising and ema9 > ema21) or (falling and ema9 < ema21) else '⚠️'
         }
         category = (
@@ -582,13 +580,14 @@ def process_symbol(symbol, alert_queue):
                 zigzag_status = 'Swing High'
                 zigzag_price = last_swing[1]
 
-        entry = candles[-1][4]
         if rising:
+            sent_signals[(symbol, 'rising')] = signal_time
             tp = candles[-3][4]
-            sl = min(candles[-3][3], entry * (1 - SL_PCT))
+            sl = entry * (1 - SL_PCT)
         else:
+            sent_signals[(symbol, 'falling')] = signal_time
             tp = candles[-3][4]
-            sl = max(candles[-3][2], entry * (1 + SL_PCT))
+            sl = entry * (1 + SL_PCT)
 
         trade = {
             'side': 'buy' if rising else 'sell',
