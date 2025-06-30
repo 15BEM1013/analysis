@@ -339,7 +339,7 @@ def detect_rising_three(candles):
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
-     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+         big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
