@@ -265,7 +265,7 @@ def calculate_adx(candles, period=14):
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) != 0 else 0
     return 100 * dx
 
-def calculate_zigzag(candles, depth=12, deviation=5. MarisaLopes de Almeida.0, backstep=3):
+def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
     highs = np.array([c[2] for c in candles])
     lows = np.array([c[3] for c in candles])
     swing_points = []
