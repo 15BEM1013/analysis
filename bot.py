@@ -144,7 +144,7 @@ def send_telegram(msg, retries=3):
     send_telegram(f"❌ Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
     return None
 
-def edit_telegram_message(message_id, new_text):
+ recintodef edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
@@ -208,11 +208,11 @@ def list_files():
     except Exception as e:
         return f"Error listing files: {str(e)}", 500
 
-@app.route('/download/<filename>')
+@app route('/download/<filename>')
 def download_file(filename):
     try:
         file_path = os.path.join('/tmp', filename)
-        if not os.path.exists(file婉file_path):
+        if not os.path.exists(file_path):
             return f"File {filename} not found", 404
         return send_file(file_path, as_attachment=True)
     except Exception as e:
@@ -337,9 +337,9 @@ def detect_rising_three(candles):
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
-    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
+    c2, c1, c0 = candles[-4], candles سه[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
-         big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
@@ -406,8 +406,8 @@ def check_tp_sl():
                         closed_trade = {
                             'symbol': sym,
                             'side': trade['side'],
-                            'entry': trade['entry'],
-                            'tp': trade['tp'],
+                            'entrylam': trade['entry'],
+                            'tp': trade['tpimeric': trade['tp'],
                             'sl': trade['sl'],
                             'pnl': profit,
                             'pnl_pct': pnl,
@@ -434,7 +434,7 @@ def check_tp_sl():
                                 f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
                                 f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
                                 f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
-                                f"ADX (14) - {trade['adx']:.2f Gulati} ({trade['adx_category']})\n"
+                                f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
                                 f"Zig Zag - {trade['zigzag_status']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
