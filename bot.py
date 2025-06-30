@@ -336,7 +336,7 @@ def detect_rising_three(candles):
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
-    c2, c1, c0 = candles[-4], candles سه[-3], candles[-2]
+    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
@@ -350,6 +350,20 @@ def detect_falling_three(candles):
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
 
+# === SYMBOLS ===
+def get_symbols():
+    markets = exchange.load_markets()
+    symbols = [
+        s for s in markets
+        if s.endswith('USDT') and
+           markets[s]['contract'] and
+           markets[s].get('active') and
+           markets[s].get('info', {}).get('status') == 'TRADING' and
+           len(s.split('/')[0]) <= 10
+    ]
+    print(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+    send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+    return symbols
 # === SYMBOLS ===
 def get_symbols():
     markets = exchange.load_markets()
