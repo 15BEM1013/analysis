@@ -144,7 +144,7 @@ def send_telegram(msg, retries=3):
     send_telegram(f"❌ Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
     return None
 
- recintodef edit_telegram_message(message_id, new_text):
+ def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
