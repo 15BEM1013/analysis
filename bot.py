@@ -37,6 +37,7 @@ ZIGZAG_DEPTH = 12
 ZIGZAG_DEVIATION = 5.0
 ZIGZAG_BACKSTEP = 3
 ZIGZAG_TOLERANCE = 0.005
+NUM_CHUNKS = 4  # Added to split symbols into 4 batches
 
 # === PROXY ===
 proxies = {
