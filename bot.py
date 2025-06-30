@@ -1,4 +1,6 @@
-import pandas as pd
+import redis
+import json
+import os
 import ccxt
 import time
 import threading
@@ -10,38 +12,46 @@ import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import queue
-import json
-import os
+import pandas as pd
 import numpy as np
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
 CHAT_ID = os.getenv('CHAT_ID', '655537138')
+REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
+REDIS_PORT = os.getenv('REDIS_PORT', 6379)
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
 TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
-MAX_WORKERS = 5  # Reduced to avoid rate limits
-BATCH_DELAY = 2.5
-NUM_CHUNKS = 4
+MAX_WORKERS = 3  # Reduced for Upstash free tier
+BATCH_DELAY = 5.0
 CAPITAL = 10.0
 SL_PCT = 1.0 / 100
 TP_SL_CHECK_INTERVAL = 30
-TRADE_FILE = '/data/open_trades.json'
-CLOSED_TRADE_FILE = '/data/closed_trades.json'
-CLOSED_TRADE_CSV = '/data/closed_trades.csv'
+CLOSED_TRADE_CSV = '/tmp/closed_trades.csv'  # Use /tmp for CSVs
 RSI_PERIOD = 14
 ADX_PERIOD = 14
 ZIGZAG_DEPTH = 12
-ZIGZAG_DEVIATION = 5.0  # 5% price change
+ZIGZAG_DEVIATION = 5.0
 ZIGZAG_BACKSTEP = 3
-ZIGZAG_TOLERANCE = 0.005  # 0.5% tolerance for swing alignment
+ZIGZAG_TOLERANCE = 0.005
 
 # === PROXY ===
 proxies = {
     "http": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712",
     "https": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712"
 }
+
+# === Redis Client ===
+redis_client = redis.Redis(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    password=REDIS_PASSWORD,
+    decode_responses=True,
+    ssl=True  # Upstash requires SSL
+)
 
 # === TIME ZONE HELPER ===
 def get_ist_time():
@@ -51,57 +61,51 @@ def get_ist_time():
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
-        os.makedirs(os.path.dirname(TRADE_FILE), exist_ok=True)
-        with open(TRADE_FILE, 'w') as f:
-            json.dump(open_trades, f, default=str)
-        print(f"Trades saved to {TRADE_FILE}")
+        redis_client.set('open_trades', json.dumps(open_trades, default=str))
+        print("Trades saved to Redis")
+        send_telegram("✅ Trades saved to Redis")
     except Exception as e:
-        print(f"Error saving trades: {e}")
-        send_telegram(f"❌ Error saving trades to {TRADE_FILE}: {e}")
+        print(f"Error saving trades to Redis: {e}")
+        send_telegram(f"❌ Error saving trades to Redis: {e}")
 
 def load_trades():
     global open_trades
     try:
-        if os.path.exists(TRADE_FILE):
-            with open(TRADE_FILE, 'r') as f:
-                loaded = json.load(f)
-                open_trades = {k: v for k, v in loaded.items()}
-            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+        data = redis_client.get('open_trades')
+        if data:
+            open_trades = json.loads(data)
+            print(f"Loaded {len(open_trades)} trades from Redis")
+        else:
+            open_trades = {}
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON in {TRADE_FILE}: {e}")
+        print(f"Error decoding JSON from Redis: {e}")
         open_trades = {}
     except Exception as e:
-        print(f"Error loading trades: {e}")
+        print(f"Error loading trades from Redis: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
     try:
-        os.makedirs(os.path.dirname(CLOSED_TRADE_FILE), exist_ok=True)
         all_closed_trades = load_closed_trades()
         all_closed_trades.append(closed_trade)
-        with open(CLOSED_TRADE_FILE, 'w') as f:
-            json.dump(all_closed_trades, f, default=str)
-        print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
+        redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
+        print("Closed trade saved to Redis")
+        send_telegram("✅ Closed trade saved to Redis")
     except Exception as e:
-        print(f"Error saving closed trades: {e}")
-        send_telegram(f"❌ Error saving closed trades to {CLOSED_TRADE_FILE}: {e}")
+        print(f"Error saving closed trades to Redis: {e}")
+        send_telegram(f"❌ Error saving closed trades to Redis: {e}")
 
 def load_closed_trades():
     try:
-        if os.path.exists(CLOSED_TRADE_FILE):
-            with open(CLOSED_TRADE_FILE, 'r') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-                else:
-                    print(f"Error: {CLOSED_TRADE_FILE} contains invalid data format")
-                    return []
+        data = redis_client.get('closed_trades')
+        if data:
+            return json.loads(data)
         return []
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON in {CLOSED_TRADE_FILE}: {e}")
+        print(f"Error decoding JSON from Redis: {e}")
         return []
     except Exception as e:
-        print(f"Error loading closed trades: {e}")
+        print(f"Error loading closed trades from Redis: {e}")
         return []
 
 # === TELEGRAM ===
@@ -116,7 +120,7 @@ def send_telegram(msg, retries=3):
         except Exception as e:
             print(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt)
     return None
 
 def edit_telegram_message(message_id, new_text):
@@ -192,7 +196,7 @@ def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
     lows = np.array([c[3] for c in candles])
     swing_points = []
     last_high = last_low = None
-    direction = 0  # 0: undefined, 1: up, -1: down
+    direction = 0
     dev = deviation / 100
 
     for i in range(depth, len(candles) - backstep):
@@ -276,7 +280,17 @@ def detect_falling_three(candles):
 # === SYMBOLS ===
 def get_symbols():
     markets = exchange.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    symbols = [
+        s for s in markets
+        if s.endswith('USDT') and
+           markets[s]['contract'] and
+           markets[s].get('active') and
+           markets[s].get('info', {}).get('status') == 'TRADING' and
+           len(s.split('/')[0]) <= 10  # Filter out invalid symbols
+    ]
+    print(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+    send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+    return symbols
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -487,7 +501,7 @@ def process_batch(symbols, alert_queue):
 # === CSV EXPORT ===
 def export_to_csv():
     try:
-        # Load closed trades
+        # Load closed trades from Redis
         all_closed_trades = load_closed_trades()
         
         # Prepare closed trades DataFrame
@@ -624,12 +638,12 @@ def export_to_csv():
         # Write open trades and summary to timestamped CSV files
         timestamp = get_ist_time().strftime("%Y%m%d_%H%M%S")
         if not open_trades_df.empty:
-            open_trades_file = f'/data/open_trades_{timestamp}.csv'
+            open_trades_file = f'/tmp/open_trades_{timestamp}.csv'
             open_trades_df.to_csv(open_trades_file, index=False)
             print(f"Open trades CSV saved: {open_trades_file}")
             send_telegram(f"📊 Open trades CSV generated: {open_trades_file}")
         
-        summary_file = f'/data/summary_{timestamp}.csv'
+        summary_file = f'/tmp/summary_{timestamp}.csv'
         summary_df.to_csv(summary_file, index=False)
         additional_summary.to_csv(summary_file, mode='a', index=False, header=True)
         print(f"Summary CSV saved: {summary_file}")
@@ -723,7 +737,6 @@ def scan_loop():
         zigzag_swing_low = [t for t in all_closed_trades if 'Swing Low' in t['zigzag_status']]
         zigzag_swing_high = [t for t in all_closed_trades if 'Swing High' in t['zigzag_status']]
 
-        # Calculate metrics for each category
         def get_category_metrics(trades):
             count = len(trades)
             wins = sum(1 for t in trades if t['pnl'] > 0)
@@ -760,7 +773,6 @@ def scan_loop():
         else:
             top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
 
-        # Format Telegram message
         timestamp = get_ist_time().strftime("%I:%M %p IST, %B %d, %Y")
         summary_msg = (
             f"🔍 Scan Completed at {timestamp}\n"
@@ -795,8 +807,6 @@ def scan_loop():
         # Export to CSV
         export_to_csv()
 
-        # Do not reset closed_trades to preserve in-memory trades for next cycle
-
 # === FLASK ===
 @app.route('/')
 def home():
@@ -805,7 +815,7 @@ def home():
 @app.route('/download/<filename>')
 def download_file(filename):
     try:
-        file_path = os.path.join('/data', filename)
+        file_path = os.path.join('/tmp', filename)
         if not os.path.exists(file_path):
             return f"File {filename} not found", 404
         return send_file(file_path, as_attachment=True)
@@ -815,7 +825,7 @@ def download_file(filename):
 @app.route('/list_files')
 def list_files():
     try:
-        files = glob.glob('/data/*.csv')
+        files = glob.glob('/tmp/*.csv')
         if not files:
             return "No CSV files found", 404
         file_list = "<br>".join([os.path.basename(f) for f in files])
@@ -823,8 +833,19 @@ def list_files():
     except Exception as e:
         return f"Error listing files: {str(e)}", 500
 
+# === TEST REDIS ===
+def test_redis():
+    try:
+        redis_client.ping()
+        print("Redis connection successful")
+        send_telegram("✅ Redis connection successful")
+    except Exception as e:
+        print(f"Redis connection failed: {e}")
+        send_telegram(f"❌ Redis connection failed: {e}")
+
 # === RUN ===
 def run_bot():
+    test_redis()
     load_trades()
     num_open = len(open_trades)
     startup_msg = f"BOT STARTED at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\nNumber of open trades: {num_open}"
@@ -834,4 +855,5 @@ def run_bot():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
+    test_redis()
     run_bot()
