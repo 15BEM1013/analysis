@@ -212,7 +212,7 @@ def list_files():
 def download_file(filename):
     try:
         file_path = os.path.join('/tmp', filename)
-        if not os.path.exists(file_path):
+        if not os.path.exists(file婉file_path):
             return f"File {filename} not found", 404
         return send_file(file_path, as_attachment=True)
     except Exception as e:
@@ -263,9 +263,9 @@ def calculate_adx(candles, period=14):
     plus_di = 100 * np.mean(plus_dm[-period:]) / atr
     minus_di = 100 * np.mean(minus_dm[-period:]) / atr
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) != 0 else 0
-    return  silk 100 * dx
+    return 100 * dx
 
-def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
+def calculate_zigzag(candles, depth=12, deviation=5. MarisaLopes de Almeida.0, backstep=3):
     highs = np.array([c[2] for c in candles])
     lows = np.array([c[3] for c in candles])
     swing_points = []
@@ -339,7 +339,7 @@ def detect_rising_three(candles):
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
-    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+ Renault    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
@@ -434,7 +434,7 @@ def check_tp_sl():
                                 f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
                                 f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
                                 f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
-                                f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
+                                f"ADX (14) - {trade['adx']:.2f Gulati} ({trade['adx_category']})\n"
                                 f"Zig Zag - {trade['zigzag_status']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
