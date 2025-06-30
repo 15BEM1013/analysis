@@ -136,32 +136,48 @@ def send_telegram(msg, retries=3):
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            print(f"Telegram sent: {msg[:50]}...")
-            return response.get('result', {}).get('message_id')
+            if response.get('ok'):
+                print(f"Telegram sent: {msg[:50]}...")
+                return response.get('result', {}).get('message_id')
+            else:
+                print(f"Telegram API error: {response.get('description')}")
         except Exception as e:
             print(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
+    send_telegram(f"❌ Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
     return None
 
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
-        requests.post(url, data=data, proxies=proxies, timeout=5)
-        print(f"Telegram updated: {new_text[:50]}...")
+        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+        if response.get('ok'):
+            print(f"Telegram updated: {new_text[:50]}...")
+        else:
+            print(f"Telegram edit error: {response.get('description')}")
     except Exception as e:
         print(f"Edit error: {e}")
+        send_telegram(f"❌ Telegram edit error: {e}")
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     try:
+        if not os.path.exists(filename):
+            print(f"File {filename} does not exist")
+            send_telegram(f"❌ File {filename} does not exist")
+            return
         with open(filename, 'rb') as f:
             data = {'chat_id': CHAT_ID, 'caption': f"CSV: {filename}"}
             files = {'document': f}
-            requests.post(url, data=data, files=files, proxies=proxies)
-            print(f"Sent {filename} to Telegram")
-            send_telegram(f"📎 Sent {filename} to Telegram")
+            response = requests.post(url, data=data, files=files, proxies=proxies, timeout=10).json()
+            if response.get('ok'):
+                print(f"Sent {filename} to Telegram")
+                send_telegram(f"📎 Sent {filename} to Telegram")
+            else:
+                print(f"Telegram send CSV error: {response.get('description')}")
+                send_telegram(f"❌ Telegram send CSV error: {response.get('description')}")
     except Exception as e:
         print(f"Error sending {filename} to Telegram: {e}")
         send_telegram(f"❌ Error sending {filename} to Telegram: {e}")
@@ -434,6 +450,7 @@ def check_tp_sl():
                             print(f"Trade {trade_id} already closed, skipping TP/SL")
                 except Exception as e:
                     print(f"TP/SL check error on {sym}: {e}")
+                    send_telegram(f"❌ TP/SL check error on {sym}: {e}")
             # Remove closed trades outside the loop to avoid modifying dict during iteration
             for sym in trades_to_remove:
                 del open_trades[sym]
@@ -444,6 +461,7 @@ def check_tp_sl():
             time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
             print(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+            send_telegram(f"❌ TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
             time.sleep(5)
 
 # === EXPORT TO CSV ===
@@ -451,6 +469,8 @@ def export_to_csv():
     try:
         all_closed_trades = load_closed_trades()
         closed_trades_df = pd.DataFrame(all_closed_trades)
+        total_pnl = closed_trades_df['pnl'].sum() if not closed_trades_df.empty else 0.0
+        total_trades = len(closed_trades_df) if not closed_trades_df.empty else 0
         if not closed_trades_df.empty:
             # Filter out already exported trades
             exported_trades = redis_client.smembers('exported_trades') or set()
@@ -472,6 +492,13 @@ def export_to_csv():
         else:
             print("No closed trades to export")
             send_telegram("📊 No closed trades to export")
+        # Send simplified PnL summary
+        summary_msg = (
+            f"🔍 Scan Completed at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📊 Closed Trades: {total_trades}\n"
+            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl / CAPITAL * 100:.2f}%)"
+        )
+        send_telegram(summary_msg)
     except Exception as e:
         print(f"Error in export_to_csv: {e}")
         send_telegram(f"❌ Error in export_to_csv: {e}")
@@ -598,6 +625,7 @@ def process_symbol(symbol, alert_queue):
         alert_queue.put((symbol, trade))
     except Exception as e:
         print(f"Error processing {symbol}: {e}")
+        send_telegram(f"❌ Error processing {symbol}: {e}")
 
 # === MAIN LOOP ===
 def run_bot():
