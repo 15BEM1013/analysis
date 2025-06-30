@@ -88,15 +88,15 @@ def load_trades():
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = load_closed_trades()
-        # Generate a unique trade ID based on symbol and close_time
-        trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}"
+        # Generate a unique trade ID based on symbol, close_time, entry, and pnl
+        trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
         # Check if trade_id already exists in Redis
         if redis_client.sismember('exported_trades', trade_id):
-            print(f"Trade {trade_id} already exported, skipping")
+            print(f"Trade {trade_id} already closed, skipping")
             return
         all_closed_trades.append(closed_trade)
         redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
-        # Mark trade as exported
+        # Mark trade as closed
         redis_client.sadd('exported_trades', trade_id)
         print(f"Closed trade saved to Redis: {trade_id}")
         send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
@@ -108,7 +108,19 @@ def load_closed_trades():
     try:
         data = redis_client.get('closed_trades')
         if data:
-            return json.loads(data)
+            trades = json.loads(data)
+            # Remove duplicates based on symbol, close_time, entry, and pnl
+            unique_trades = []
+            seen_ids = set()
+            for trade in trades:
+                trade_id = f"{trade['symbol']}:{trade['close_time']}:{trade['entry']}:{trade['pnl']}"
+                if trade_id not in seen_ids:
+                    unique_trades.append(trade)
+                    seen_ids.add(trade_id)
+            if len(trades) != len(unique_trades):
+                print(f"Removed {len(trades) - len(unique_trades)} duplicate closed trades from Redis")
+                redis_client.set('closed_trades', json.dumps(unique_trades, default=str))
+            return unique_trades
         return []
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON from Redis: {e}")
@@ -353,9 +365,10 @@ def get_next_candle_close():
 
 # === TP/SL CHECK ===
 def check_tp_sl():
-    global closed_trades
+    global open_trades
     while True:
         try:
+            trades_to_remove = []
             for sym, trade in list(open_trades.items()):
                 try:
                     ticker = exchange.fetch_ticker(sym)
@@ -398,26 +411,36 @@ def check_tp_sl():
                             'zigzag_price': trade['zigzag_price'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
                         }
-                        save_closed_trades(closed_trade)
-                        ema_status = trade['ema_status']
-                        new_msg = (
-                            f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                            f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                            f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
-                            f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
-                            f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
-                            f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
-                            f"Zig Zag - {trade['zigzag_status']}\n"
-                            f"entry - {trade['entry']}\n"
-                            f"tp - {trade['tp']}\n"
-                            f"sl - {trade['sl']:.4f}\n"
-                            f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
-                        )
-                        edit_telegram_message(trade['msg_id'], new_msg)
-                        del open_trades[sym]
-                        save_trades()
+                        trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
+                        if not redis_client.sismember('exported_trades', trade_id):
+                            save_closed_trades(closed_trade)
+                            trades_to_remove.append(sym)
+                            ema_status = trade['ema_status']
+                            new_msg = (
+                                f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
+                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                                f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
+                                f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
+                                f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
+                                f"Zig Zag - {trade['zigzag_status']}\n"
+                                f"entry - {trade['entry']}\n"
+                                f"tp - {trade['tp']}\n"
+                                f"sl - {trade['sl']:.4f}\n"
+                                f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
+                            )
+                            edit_telegram_message(trade['msg_id'], new_msg)
+                        else:
+                            print(f"Trade {trade_id} already closed, skipping TP/SL")
                 except Exception as e:
                     print(f"TP/SL check error on {sym}: {e}")
+            # Remove closed trades outside the loop to avoid modifying dict during iteration
+            for sym in trades_to_remove:
+                del open_trades[sym]
+            if trades_to_remove:
+                save_trades()
+                print(f"Removed {len(trades_to_remove)} closed trades from open_trades")
+                send_telegram(f"Removed {len(trades_to_remove)} closed trades from open_trades")
             time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
             print(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
@@ -431,7 +454,7 @@ def export_to_csv():
         if not closed_trades_df.empty:
             # Filter out already exported trades
             exported_trades = redis_client.smembers('exported_trades') or set()
-            closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time']
+            closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time'] + ':' + closed_trades_df['entry'].astype(str) + ':' + closed_trades_df['pnl'].astype(str)
             new_trades_df = closed_trades_df[~closed_trades_df['trade_id'].isin(exported_trades)]
             if not new_trades_df.empty:
                 mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
@@ -439,6 +462,7 @@ def export_to_csv():
                 new_trades_df.drop(columns=['trade_id']).to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
                 print(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
                 send_telegram(f"📊 Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
+                send_csv_to_telegram(CLOSED_TRADE_CSV)
                 # Update exported trades in Redis
                 for trade_id in new_trades_df['trade_id']:
                     redis_client.sadd('exported_trades', trade_id)
