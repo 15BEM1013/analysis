@@ -7,3 +7,4 @@ pytz
 numpy
 python-telegram-bot
 pandas
+redis
