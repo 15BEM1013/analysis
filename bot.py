@@ -88,10 +88,18 @@ def load_trades():
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = load_closed_trades()
+        # Generate a unique trade ID based on symbol and close_time
+        trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}"
+        # Check if trade_id already exists in Redis
+        if redis_client.sismember('exported_trades', trade_id):
+            print(f"Trade {trade_id} already exported, skipping")
+            return
         all_closed_trades.append(closed_trade)
         redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
-        print("Closed trade saved to Redis")
-        send_telegram("✅ Closed trade saved to Redis")
+        # Mark trade as exported
+        redis_client.sadd('exported_trades', trade_id)
+        print(f"Closed trade saved to Redis: {trade_id}")
+        send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
     except Exception as e:
         print(f"Error saving closed trades to Redis: {e}")
         send_telegram(f"❌ Error saving closed trades to Redis: {e}")
@@ -116,7 +124,7 @@ def send_telegram(msg, retries=3):
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            print(f"Telegram sent: {msg}")
+            print(f"Telegram sent: {msg[:50]}...")
             return response.get('result', {}).get('message_id')
         except Exception as e:
             print(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
@@ -129,28 +137,9 @@ def edit_telegram_message(message_id, new_text):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
         requests.post(url, data=data, proxies=proxies, timeout=5)
-        print(f"Telegram updated: {new_text}")
+        print(f"Telegram updated: {new_text[:50]}...")
     except Exception as e:
         print(f"Edit error: {e}")
-
-# === CSV EXPORT ===
-def export_to_csv():
-    try:
-        all_closed_trades = load_closed_trades()
-        closed_trades_df = pd.DataFrame(all_closed_trades)
-        if not closed_trades_df.empty:
-            mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
-            header = not os.path.exists(CLOSED_TRADE_CSV)
-            closed_trades_df.to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
-            print(f"Closed trades appended to {CLOSED_TRADE_CSV}")
-            send_telegram(f"📊 Closed trades appended to {CLOSED_TRADE_CSV}")
-            send_csv_to_telegram(CLOSED_TRADE_CSV)
-        else:
-            print("No closed trades to export")
-            send_telegram("📊 No closed trades to export")
-    except Exception as e:
-        print(f"Error in export_to_csv: {e}")
-        send_telegram(f"❌ Error in export_to_csv: {e}")
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
@@ -181,7 +170,7 @@ closed_trades = []
 
 # === FLASK ENDPOINTS ===
 @app.route('/')
-def home():
+def index():
     return "✅ Rising & Falling Three Pattern Bot is Live!"
 
 @app.route('/list_files')
@@ -198,7 +187,7 @@ def list_files():
 @app.route('/download/<filename>')
 def download_file(filename):
     try:
-        file_path = f"/tmp/{filename}"
+        file_path = os.path.join('/tmp', filename)
         if not os.path.exists(file_path):
             return f"File {filename} not found", 404
         return send_file(file_path, as_attachment=True)
@@ -398,7 +387,7 @@ def check_tp_sl():
                             'pnl': profit,
                             'pnl_pct': pnl,
                             'category': trade['category'],
-                            'ema_status': str(trade['ema_status']),
+                            'ema_status': trade['ema_status'],
                             'rsi': trade['rsi'],
                             'rsi_category': trade['rsi_category'],
                             'adx': trade['adx'],
@@ -409,9 +398,7 @@ def check_tp_sl():
                             'zigzag_price': trade['zigzag_price'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
                         }
-                        closed_trades.append(closed_trade)
                         save_closed_trades(closed_trade)
-                        export_to_csv()  # Export immediately after closing a trade
                         ema_status = trade['ema_status']
                         new_msg = (
                             f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
@@ -435,6 +422,261 @@ def check_tp_sl():
         except Exception as e:
             print(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
             time.sleep(5)
+
+# === EXPORT TO CSV ===
+def export_to_csv():
+    try:
+        all_closed_trades = load_closed_trades()
+        closed_trades_df = pd.DataFrame(all_closed_trades)
+        if not closed_trades_df.empty:
+            # Filter out already exported trades
+            exported_trades = redis_client.smembers('exported_trades') or set()
+            closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time']
+            new_trades_df = closed_trades_df[~closed_trades_df['trade_id'].isin(exported_trades)]
+            if not new_trades_df.empty:
+                mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
+                header = not os.path.exists(CLOSED_TRADE_CSV)
+                new_trades_df.drop(columns=['trade_id']).to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
+                print(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
+                send_telegram(f"📊 Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
+                # Update exported trades in Redis
+                for trade_id in new_trades_df['trade_id']:
+                    redis_client.sadd('exported_trades', trade_id)
+            else:
+                print("No new closed trades to export")
+                send_telegram("📊 No new closed trades to export")
+        else:
+            print("No closed trades to export")
+            send_telegram("📊 No closed trades to export")
+
+        open_trades_df = pd.DataFrame([
+            {
+                'symbol': sym,
+                'side': trade['side'],
+                'entry': trade['entry'],
+                'tp': trade['tp'],
+                'sl': trade['sl'],
+                'category': trade['category'],
+                'ema_status': str(trade['ema_status']),
+                'rsi': trade['rsi'],
+                'rsi_category': trade['rsi_category'],
+                'adx': trade['adx'],
+                'adx_category': trade['adx_category'],
+                'big_candle_rsi': trade['big_candle_rsi'],
+                'big_candle_rsi_status': trade['big_candle_rsi_status'],
+                'zigzag_status': trade['zigzag_status'],
+                'zigzag_price': trade['zigzag_price']
+            } for sym, trade in open_trades.items()
+        ])
+        timestamp = get_ist_time().strftime("%Y%m%d_%H%M%S")
+        if not open_trades_df.empty:
+            open_trades_file = f'/tmp/open_trades_{timestamp}.csv'
+            open_trades_df.to_csv(open_trades_file, index=False)
+            print(f"Open trades CSV saved: {open_trades_file}")
+            send_telegram(f"📊 Open trades CSV generated: {open_trades_file}")
+            send_csv_to_telegram(open_trades_file)
+        else:
+            print("No open trades to export")
+            send_telegram("📊 No open trades to export")
+
+        summary = {
+            'timestamp': get_ist_time().strftime("%Y-%m-%d %H:%M:%S"),
+            'two_green_trades': 0,
+            'two_green_wins': 0,
+            'two_green_losses': 0,
+            'two_green_pnl': 0.0,
+            'one_green_one_caution_trades': 0,
+            'one_green_one_caution_wins': 0,
+            'one_green_one_caution_losses': 0,
+            'one_green_one_caution_pnl': 0.0,
+            'two_cautions_trades': 0,
+            'two_cautions_wins': 0,
+            'two_cautions_losses': 0,
+            'two_cautions_pnl': 0.0,
+            'adx_low_rsi_overbought_trades': 0,
+            'adx_low_rsi_overbought_wins': 0,
+            'adx_low_rsi_overbought_losses': 0,
+            'adx_low_rsi_overbought_pnl': 0.0,
+            'adx_low_rsi_neutral_trades': 0,
+            'adx_low_rsi_neutral_wins': 0,
+            'adx_low_rsi_neutral_losses': 0,
+            'adx_low_rsi_neutral_pnl': 0.0,
+            'adx_low_rsi_oversold_trades': 0,
+            'adx_low_rsi_oversold_wins': 0,
+            'adx_low_rsi_oversold_losses': 0,
+            'adx_low_rsi_oversold_pnl': 0.0,
+            'adx_high_rsi_overbought_trades': 0,
+            'adx_high_rsi_overbought_wins': 0,
+            'adx_high_rsi_overbought_losses': 0,
+            'adx_high_rsi_overbought_pnl': 0.0,
+            'adx_high_rsi_neutral_trades': 0,
+            'adx_high_rsi_neutral_wins': 0,
+            'adx_high_rsi_neutral_losses': 0,
+            'adx_high_rsi_neutral_pnl': 0.0,
+            'adx_high_rsi_oversold_trades': 0,
+            'adx_high_rsi_oversold_wins': 0,
+            'adx_high_rsi_oversold_losses': 0,
+            'adx_high_rsi_oversold_pnl': 0.0,
+            'big_candle_rsi_high_trades': 0,
+            'big_candle_rsi_high_tp': 0,
+            'big_candle_rsi_high_sl': 0,
+            'big_candle_rsi_high_pnl': 0.0,
+            'big_candle_rsi_low_trades': 0,
+            'big_candle_rsi_low_tp': 0,
+            'big_candle_rsi_low_sl': 0,
+            'big_candle_rsi_low_pnl': 0.0,
+            'zigzag_swing_low_trades': 0,
+            'zigzag_swing_low_tp': 0,
+            'zigzag_swing_low_sl': 0,
+            'zigzag_swing_low_pnl': 0.0,
+            'zigzag_swing_high_trades': 0,
+            'zigzag_swing_high_tp': 0,
+            'zigzag_swing_high_sl': 0,
+            'zigzag_swing_high_pnl': 0.0,
+            'total_pnl': 0.0,
+            'cumulative_pnl': 0.0
+        }
+
+        for trade in all_closed_trades:
+            category = trade['category']
+            pnl = trade['pnl']
+            is_win = trade['pnl'] > 0
+            if category == 'two_green':
+                summary['two_green_trades'] += 1
+                summary['two_green_pnl'] += pnl
+                if is_win:
+                    summary['two_green_wins'] += 1
+                else:
+                    summary['two_green_losses'] += 1
+            elif category == 'one_green_one_caution':
+                summary['one_green_one_caution_trades'] += 1
+                summary['one_green_one_caution_pnl'] += pnl
+                if is_win:
+                    summary['one_green_one_caution_wins'] += 1
+                else:
+                    summary['one_green_one_caution_losses'] += 1
+            elif category == 'two_cautions':
+                summary['two_cautions_trades'] += 1
+                summary['two_cautions_pnl'] += pnl
+                if is_win:
+                    summary['two_cautions_wins'] += 1
+                else:
+                    summary['two_cautions_losses'] += 1
+            adx = trade['adx']
+            rsi = trade['rsi']
+            if adx < 25:
+                if rsi > 70:
+                    summary['adx_low_rsi_overbought_trades'] += 1
+                    summary['adx_low_rsi_overbought_pnl'] += pnl
+                    if is_win:
+                        summary['adx_low_rsi_overbought_wins'] += 1
+                    else:
+                        summary['adx_low_rsi_overbought_losses'] += 1
+                elif 30 <= rsi <= 70:
+                    summary['adx_low_rsi_neutral_trades'] += 1
+                    summary['adx_low_rsi_neutral_pnl'] += pnl
+                    if is_win:
+                        summary['adx_low_rsi_neutral_wins'] += 1
+                    else:
+                        summary['adx_low_rsi_neutral_losses'] += 1
+                elif rsi < 30:
+                    summary['adx_low_rsi_oversold_trades'] += 1
+                    summary['adx_low_rsi_oversold_pnl'] += pnl
+                    if is_win:
+                        summary['adx_low_rsi_oversold_wins'] += 1
+                    else:
+                        summary['adx_low_rsi_oversold_losses'] += 1
+            else:
+                if rsi > 70:
+                    summary['adx_high_rsi_overbought_trades'] += 1
+                    summary['adx_high_rsi_overbought_pnl'] += pnl
+                    if is_win:
+                        summary['adx_high_rsi_overbought_wins'] += 1
+                    else:
+                        summary['adx_high_rsi_overbought_losses'] += 1
+                elif 30 <= rsi <= 70:
+                    summary['adx_high_rsi_neutral_trades'] += 1
+                    summary['adx_high_rsi_neutral_pnl'] += pnl
+                    if is_win:
+                        summary['adx_high_rsi_neutral_wins'] += 1
+                    else:
+                        summary['adx_high_rsi_neutral_losses'] += 1
+                elif rsi < 30:
+                    summary['adx_high_rsi_oversold_trades'] += 1
+                    summary['adx_high_rsi_oversold_pnl'] += pnl
+                    if is_win:
+                        summary['adx_high_rsi_oversold_wins'] += 1
+                    else:
+                        summary['adx_high_rsi_oversold_losses'] += 1
+            big_candle_rsi = trade['big_candle_rsi']
+            if big_candle_rsi > 75:
+                summary['big_candle_rsi_high_trades'] += 1
+                summary['big_candle_rsi_high_pnl'] += pnl
+                if is_win:
+                    summary['big_candle_rsi_high_tp'] += 1
+                else:
+                    summary['big_candle_rsi_high_sl'] += 1
+            elif big_candle_rsi < 25:
+                summary['big_candle_rsi_low_trades'] += 1
+                summary['big_candle_rsi_low_pnl'] += pnl
+                if is_win:
+                    summary['big_candle_rsi_low_tp'] += 1
+                else:
+                    summary['big_candle_rsi_low_sl'] += 1
+            zigzag_status = trade['zigzag_status']
+            if zigzag_status == 'Swing Low':
+                summary['zigzag_swing_low_trades'] += 1
+                summary['zigzag_swing_low_pnl'] += pnl
+                if is_win:
+                    summary['zigzag_swing_low_tp'] += 1
+                else:
+                    summary['zigzag_swing_low_sl'] += 1
+            elif zigzag_status == 'Swing High':
+                summary['zigzag_swing_high_trades'] += 1
+                summary['zigzag_swing_high_pnl'] += pnl
+                if is_win:
+                    summary['zigzag_swing_high_tp'] += 1
+                else:
+                    summary['zigzag_swing_high_sl'] += 1
+            summary['total_pnl'] += pnl
+
+        summary_file = f'/tmp/summary_{timestamp}.csv'
+        pd.DataFrame([summary]).to_csv(summary_file, index=False)
+        print(f"Summary CSV saved: {summary_file}")
+        send_telegram(f"📊 Summary CSV generated: {summary_file}")
+        send_csv_to_telegram(summary_file)
+
+        msg = (
+            f"🔍 Scan Completed at {summary['timestamp']}\n"
+            f"📊 Trade Summary (Closed Trades):\n"
+            f"- ✅✅ Two Green Ticks: {summary['two_green_trades']} trades (Wins: {summary['two_green_wins']}, Losses: {summary['two_green_losses']}), PnL: ${summary['two_green_pnl']:.2f} ({summary['two_green_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['two_green_wins'] / summary['two_green_trades'] * 100 if summary['two_green_trades'] > 0 else 0:.2f}%\n"
+            f"- ✅⚠️ One Green, One Caution: {summary['one_green_one_caution_trades']} trades (Wins: {summary['one_green_one_caution_wins']}, Losses: {summary['one_green_one_caution_losses']}), PnL: ${summary['one_green_one_caution_pnl']:.2f} ({summary['one_green_one_caution_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['one_green_one_caution_wins'] / summary['one_green_one_caution_trades'] * 100 if summary['one_green_one_caution_trades'] > 0 else 0:.2f}%\n"
+            f"- ⚠️⚠️ Two Cautions: {summary['two_cautions_trades']} trades (Wins: {summary['two_cautions_wins']}, Losses: {summary['two_cautions_losses']}), PnL: ${summary['two_cautions_pnl']:.2f} ({summary['two_cautions_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['two_cautions_wins'] / summary['two_cautions_trades'] * 100 if summary['two_cautions_trades'] > 0 else 0:.2f}%\n"
+            f"- ADX < 25 (Weak Trend):\n"
+            f"  - RSI Overbought (>70): {summary['adx_low_rsi_overbought_trades']} trades (Wins: {summary['adx_low_rsi_overbought_wins']}, Losses: {summary['adx_low_rsi_overbought_losses']}), PnL: ${summary['adx_low_rsi_overbought_pnl']:.2f} ({summary['adx_low_rsi_overbought_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_low_rsi_overbought_wins'] / summary['adx_low_rsi_overbought_trades'] * 100 if summary['adx_low_rsi_overbought_trades'] > 0 else 0:.2f}%\n"
+            f"  - RSI Neutral (30–70): {summary['adx_low_rsi_neutral_trades']} trades (Wins: {summary['adx_low_rsi_neutral_wins']}, Losses: {summary['adx_low_rsi_neutral_losses']}), PnL: ${summary['adx_low_rsi_neutral_pnl']:.2f} ({summary['adx_low_rsi_neutral_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_low_rsi_neutral_wins'] / summary['adx_low_rsi_neutral_trades'] * 100 if summary['adx_low_rsi_neutral_trades'] > 0 else 0:.2f}%\n"
+            f"  - RSI Oversold (<30): {summary['adx_low_rsi_oversold_trades']} trades (Wins: {summary['adx_low_rsi_oversold_wins']}, Losses: {summary['adx_low_rsi_oversold_losses']}), PnL: ${summary['adx_low_rsi_oversold_pnl']:.2f} ({summary['adx_low_rsi_oversold_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_low_rsi_oversold_wins'] / summary['adx_low_rsi_oversold_trades'] * 100 if summary['adx_low_rsi_oversold_trades'] > 0 else 0:.2f}%\n"
+            f"- ADX ≥ 25 (Strong Trend):\n"
+            f"  - RSI Overbought (>70): {summary['adx_high_rsi_overbought_trades']} trades (Wins: {summary['adx_high_rsi_overbought_wins']}, Losses: {summary['adx_high_rsi_overbought_losses']}), PnL: ${summary['adx_high_rsi_overbought_pnl']:.2f} ({summary['adx_high_rsi_overbought_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_high_rsi_overbought_wins'] / summary['adx_high_rsi_overbought_trades'] * 100 if summary['adx_high_rsi_overbought_trades'] > 0 else 0:.2f}%\n"
+            f"  - RSI Neutral (30–70): {summary['adx_high_rsi_neutral_trades']} trades (Wins: {summary['adx_high_rsi_neutral_wins']}, Losses: {summary['adx_high_rsi_neutral_losses']}), PnL: ${summary['adx_high_rsi_neutral_pnl']:.2f} ({summary['adx_high_rsi_neutral_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_high_rsi_neutral_wins'] / summary['adx_high_rsi_neutral_trades'] * 100 if summary['adx_high_rsi_neutral_trades'] > 0 else 0:.2f}%\n"
+            f"  - RSI Oversold (<30): {summary['adx_high_rsi_oversold_trades']} trades (Wins: {summary['adx_high_rsi_oversold_wins']}, Losses: {summary['adx_high_rsi_oversold_losses']}), PnL: ${summary['adx_high_rsi_oversold_pnl']:.2f} ({summary['adx_high_rsi_oversold_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['adx_high_rsi_oversold_wins'] / summary['adx_high_rsi_oversold_trades'] * 100 if summary['adx_high_rsi_oversold_trades'] > 0 else 0:.2f}%\n"
+            f"- Big Candle RSI > 75 (Rising Three):\n"
+            f"  - Total Trades: {summary['big_candle_rsi_high_trades']} trades (TP Hits: {summary['big_candle_rsi_high_tp']}, SL Hits: {summary['big_candle_rsi_high_sl']}), PnL: ${summary['big_candle_rsi_high_pnl']:.2f} ({summary['big_candle_rsi_high_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['big_candle_rsi_high_tp'] / summary['big_candle_rsi_high_trades'] * 100 if summary['big_candle_rsi_high_trades'] > 0 else 0:.2f}%\n"
+            f"- Big Candle RSI < 25 (Falling Three):\n"
+            f"  - Total Trades: {summary['big_candle_rsi_low_trades']} trades (TP Hits: {summary['big_candle_rsi_low_tp']}, SL Hits: {summary['big_candle_rsi_low_sl']}), PnL: ${summary['big_candle_rsi_low_pnl']:.2f} ({summary['big_candle_rsi_low_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['big_candle_rsi_low_tp'] / summary['big_candle_rsi_low_trades'] * 100 if summary['big_candle_rsi_low_trades'] > 0 else 0:.2f}%\n"
+            f"- Zig Zag Swing Low (Rising Three):\n"
+            f"  - Total Trades: {summary['zigzag_swing_low_trades']} trades (TP Hits: {summary['zigzag_swing_low_tp']}, SL Hits: {summary['zigzag_swing_low_sl']}), PnL: ${summary['zigzag_swing_low_pnl']:.2f} ({summary['zigzag_swing_low_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['zigzag_swing_low_tp'] / summary['zigzag_swing_low_trades'] * 100 if summary['zigzag_swing_low_trades'] > 0 else 0:.2f}%\n"
+            f"- Zig Zag Swing High (Falling Three):\n"
+            f"  - Total Trades: {summary['zigzag_swing_high_trades']} trades (TP Hits: {summary['zigzag_swing_high_tp']}, SL Hits: {summary['zigzag_swing_high_sl']}), PnL: ${summary['zigzag_swing_high_pnl']:.2f} ({summary['zigzag_swing_high_pnl'] / CAPITAL * 100:.2f}%), Win Rate: {summary['zigzag_swing_high_tp'] / summary['zigzag_swing_high_trades'] * 100 if summary['zigzag_swing_high_trades'] > 0 else 0:.2f}%\n"
+            f"💰 Total PnL: ${summary['total_pnl']:.2f} ({summary['total_pnl'] / CAPITAL * 100:.2f}%)\n"
+            f"📈 Cumulative PnL: ${summary['cumulative_pnl']:.2f} ({summary['cumulative_pnl'] / CAPITAL * 100:.2f}%)\n"
+            f"🏆 Top Symbol: None with $0.00 (0.00%)\n"
+            f"🔄 Open Trades: {len(open_trades)}"
+        )
+        send_telegram(msg)
+    except Exception as e:
+        print(f"Error in export_to_csv: {e}")
+        send_telegram(f"❌ Error in export_to_csv: {e}")
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
@@ -490,46 +732,41 @@ def process_symbol(symbol, alert_queue):
                 print(f"{symbol}: No pattern detected. Reasons: {', '.join(reasons)}")
             return
 
-        side = 'buy' if rising else 'sell'
-        entry = candles[-1][4]
-        sl = entry * (1 - SL_PCT) if rising else entry * (1 + SL_PCT)
-        tp = entry * (1 + 2 * SL_PCT) if rising else entry * (1 - 2 * SL_PCT)
+        price = candles[-1][4]
         ema_status = {
-            'price_ema21': candles[-1][4] > ema21 if rising else candles[-1][4] < ema21,
-            'ema9_ema21': ema9 > ema21 if rising else ema9 < ema21
+            'price_ema21': '✅' if (rising and price > ema21) or (falling and price < ema21) else '⚠️',
+            'ema9_ema21': '✅' if (rising and ema9 > ema21) or (falling and ema9 < ema21) else '⚠️'
         }
         category = (
-            'two_green' if ema_status['price_ema21'] and ema_status['ema9_ema21']
-            else 'one_green_one_caution' if ema_status['price_ema21'] or ema_status['ema9_ema21']
-            else 'two_cautions'
+            'two_green' if ema_status['price_ema21'] == '✅' and ema_status['ema9_ema21'] == '✅' else
+            'one_green_one_caution' if ema_status['price_ema21'] == '✅' or ema_status['ema9_ema21'] == '✅' else
+            'two_cautions'
         )
-        rsi_category = (
-            'overbought' if rsi > 70
-            else 'oversold' if rsi < 30
-            else 'neutral'
-        )
-        adx_category = 'strong' if adx >= 25 else 'weak'
-        big_candle_rsi_status = (
-            'overbought' if big_candle_rsi > 75 and rising
-            else 'oversold' if big_candle_rsi < 25 and falling
-            else 'neutral'
-        )
-        zigzag_status = 'none'
-        zigzag_price = None
+        rsi_category = 'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'
+        adx_category = 'Strong Trend' if adx >= 25 else 'Weak Trend'
+        big_candle_rsi_status = 'Overbought' if big_candle_rsi > 75 else 'Oversold' if big_candle_rsi < 25 else 'Normal'
+
+        zigzag_status = 'No Swing'
+        zigzag_price = ''
         if swing_points:
             last_swing = swing_points[-1]
-            zigzag_price = last_swing[1]
-            zigzag_status = last_swing[2]
-            if zigzag_status == 'low' and abs(candles[-1][4] - zigzag_price) / zigzag_price <= ZIGZAG_TOLERANCE:
-                zigzag_status = 'swing_low' if rising else 'none'
-            elif zigzag_status == 'high' and abs(candles[-1][4] - zigzag_price) / zigzag_price <= ZIGZAG_TOLERANCE:
-                zigzag_status = 'swing_high' if falling else 'none'
-            else:
-                zigzag_status = 'none'
+            if last_swing[2] == 'low' and rising:
+                zigzag_status = 'Swing Low'
+                zigzag_price = last_swing[1]
+            elif last_swing[2] == 'high' and falling:
+                zigzag_status = 'Swing High'
+                zigzag_price = last_swing[1]
 
-        alert = {
-            'symbol': symbol,
-            'side': side,
+        entry = candles[-1][4]
+        if rising:
+            tp = candles[-3][4]
+            sl = min(candles[-3][3], entry * (1 - SL_PCT))
+        else:
+            tp = candles[-3][4]
+            sl = max(candles[-3][2], entry * (1 + SL_PCT))
+
+        trade = {
+            'side': 'buy' if rising else 'sell',
             'entry': entry,
             'tp': tp,
             'sl': sl,
@@ -544,74 +781,54 @@ def process_symbol(symbol, alert_queue):
             'zigzag_status': zigzag_status,
             'zigzag_price': zigzag_price
         }
-        alert_queue.put(alert)
+
+        msg = (
+            f"{symbol} - {'RISING' if rising else 'FALLING'} PATTERN\n"
+            f"{'Above' if rising else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
+            f"ema 9 {'above' if rising else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+            f"RSI (14) - {rsi:.2f} ({rsi_category})\n"
+            f"Big Candle RSI - {big_candle_rsi:.2f} ({big_candle_rsi_status})\n"
+            f"ADX (14) - {adx:.2f} ({adx_category})\n"
+            f"Zig Zag - {zigzag_status}\n"
+            f"entry - {entry}\n"
+            f"tp - {tp}\n"
+            f"sl - {sl:.4f}"
+        )
+        trade['msg_id'] = send_telegram(msg)
+        open_trades[symbol] = trade
+        save_trades()
+        alert_queue.put((symbol, trade))
     except Exception as e:
         print(f"Error processing {symbol}: {e}")
 
-# === MAIN SCAN ===
+# === MAIN LOOP ===
 def run_bot():
     try:
-        redis_client.ping()
-        print("✅ Redis connection successful")
-        send_telegram("✅ Redis connection successful")
-    except Exception as e:
-        print(f"Redis connection failed: {e}")
-        send_telegram(f"❌ Redis connection failed: {e}")
-        return
-
-    load_trades()
-    threading.Thread(target=check_tp_sl, daemon=True).start()
-    print(f"BOT STARTED at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Number of open trades: {len(open_trades)}")
-    send_telegram(f"BOT STARTED at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\nNumber of open trades: {len(open_trades)}")
-
-    alert_queue = queue.Queue()
-    while True:
-        try:
+        test_redis()
+        load_trades()
+        alert_queue = queue.Queue()
+        threading.Thread(target=check_tp_sl, daemon=True).start()
+        while True:
             symbols = get_symbols()
             chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
-            symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
-            for chunk in symbol_chunks:
+            chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+            for chunk in chunks:
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     futures = [executor.submit(process_symbol, symbol, alert_queue) for symbol in chunk]
-                    as_completed(futures)
+                    for future in as_completed(futures):
+                        future.result()
                 time.sleep(BATCH_DELAY)
-
-            while not alert_queue.empty():
-                alert = alert_queue.get()
-                symbol = alert['symbol']
-                if symbol not in sent_signals:
-                    sent_signals[symbol] = []
-                if symbol not in open_trades:
-                    msg = (
-                        f"{symbol} - {'RISING' if alert['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                        f"{'Above' if alert['side'] == 'buy' else 'Below'} 21 ema - {alert['ema_status']['price_ema21']}\n"
-                        f"ema 9 {'above' if alert['side'] == 'buy' else 'below'} 21 - {alert['ema_status']['ema9_ema21']}\n"
-                        f"RSI (14) - {alert['rsi']:.2f} ({alert['rsi_category']})\n"
-                        f"Big Candle RSI - {alert['big_candle_rsi']:.2f} ({alert['big_candle_rsi_status']})\n"
-                        f"ADX (14) - {alert['adx']:.2f} ({alert['adx_category']})\n"
-                        f"Zig Zag - {alert['zigzag_status']}\n"
-                        f"entry - {alert['entry']}\n"
-                        f"tp - {alert['tp']}\n"
-                        f"sl - {alert['sl']:.4f}"
-                    )
-                    msg_id = send_telegram(msg)
-                    if msg_id:
-                        alert['msg_id'] = msg_id
-                        open_trades[symbol] = alert
-                        save_trades()
-                        sent_signals[symbol].append(msg)
-
             export_to_csv()
             print(f"Number of open trades after scan: {len(open_trades)}")
             send_telegram(f"Number of open trades after scan: {len(open_trades)}")
             time.sleep(get_next_candle_close() - time.time())
-        except Exception as e:
-            print(f"Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
-            send_telegram(f"❌ Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
-            time.sleep(5)
+    except Exception as e:
+        print(f"Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+        send_telegram(f"❌ Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+        time.sleep(5)
 
-if __name__ == "__main__":
+# === START ===
+def test_redis():
     try:
         redis_client.ping()
         print("✅ Redis connection successful")
@@ -619,6 +836,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Redis connection failed: {e}")
         send_telegram(f"❌ Redis connection failed: {e}")
-        exit(1)
+
+if __name__ == "__main__":
+    test_redis()
+    load_trades()
     threading.Thread(target=run_bot, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
