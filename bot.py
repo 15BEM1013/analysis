@@ -177,6 +177,7 @@ def send_csv_to_telegram(filename):
     except Exception as e:
         print(f"Error sending {filename} to Telegram: {e}")
         send_telegram(f"❌ Error sending {filename} to Telegram: {e}")
+
 # === INIT ===
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
@@ -207,7 +208,7 @@ def list_files():
     except Exception as e:
         return f"Error listing files: {str(e)}", 500
 
-@app route('/download/<filename>')
+@app.route('/download/<filename>')
 def download_file(filename):
     try:
         file_path = os.path.join('/tmp', filename)
@@ -364,20 +365,6 @@ def get_symbols():
     print(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
     send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
     return symbols
-# === SYMBOLS ===
-def get_symbols():
-    markets = exchange.load_markets()
-    symbols = [
-        s for s in markets
-        if s.endswith('USDT') and
-           markets[s]['contract'] and
-           markets[s].get('active') and
-           markets[s].get('info', {}).get('status') == 'TRADING' and
-           len(s.split('/')[0]) <= 10
-    ]
-    print(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
-    send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
-    return symbols
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -419,8 +406,8 @@ def check_tp_sl():
                         closed_trade = {
                             'symbol': sym,
                             'side': trade['side'],
-                            'entrylam': trade['entry'],
-                            'tp': trade['tpimeric': trade['tp'],
+                            'entry': trade['entry'],
+                            'tp': trade['tp'],
                             'sl': trade['sl'],
                             'pnl': profit,
                             'pnl_pct': pnl,
