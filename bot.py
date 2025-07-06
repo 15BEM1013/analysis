@@ -15,6 +15,14 @@ import queue
 import pandas as pd
 import numpy as np
 
+proxies = {
+    "http": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712",
+    "https": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712"
+}
+client = ccxt.binance({
+    'proxies': proxies
+})
+
 # === CONFIG ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
 CHAT_ID = os.getenv('CHAT_ID', '655537138')
