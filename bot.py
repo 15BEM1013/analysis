@@ -487,7 +487,13 @@ def check_tp_sl():
                             'macd_signal': trade['macd_signal'],
                             'macd_status': trade['macd_status'],
                             'avg_volume': trade['avg_volume'],
-                            'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
+                            'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S'),
+                            'first_candle_pattern': trade['first_candle_pattern'],
+                            'first_candle_lower_wick': trade['first_candle_lower_wick'],
+                            'first_candle_upper_wick': trade['first_candle_upper_wick'],
+                            'first_candle_body': trade['first_candle_body'],
+                            'first_candle_tick': trade['first_candle_tick'],
+                            'second_candle_tp_touched': trade['second_candle_tp_touched']
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
                         if not redis_client.sismember('exported_trades', trade_id):
@@ -506,6 +512,9 @@ def check_tp_sl():
                                 f"OBV Trend - {trade['obv_trend']}\n"
                                 f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
                                 f"Liquidity - {trade['avg_volume']:.0f} USDT\n"
+                                f"1st Small Candle: {trade['first_candle_pattern']}, Lower: {trade['first_candle_lower_wick']:.2f}%, "
+                                f"Upper: {trade['first_candle_upper_wick']:.2f}%, Body: {trade['first_candle_body']:.2f}% {trade['first_candle_tick']}\n"
+                                f"2nd Small Candle Touched TP: {trade['second_candle_tp_touched']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
                                 f"sl - {trade['sl']:.4f}\n"
@@ -542,7 +551,7 @@ def export_to_csv():
         avg_loss = closed_trades_df[closed_trades_df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
         win_rate_rising = closed_trades_df[closed_trades_df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'buy'].empty else 0.0
         win_rate_falling = closed_trades_df[closed_trades_df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'sell'].empty else 0.0
-        win_rate_obv_up = df[df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not df[df['obv_trend'] == 'Up'].empty else 0.0
+        win_rate_obv_up = closed_trades_df[closed_trades_df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['obv_trend'] == 'Up'].empty else 0.0
         win_rate_macd_bullish = closed_trades_df[closed_trades_df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['macd_status'] == 'Bullish'].empty else 0.0
         
         if not closed_trades_df.empty:
@@ -763,7 +772,13 @@ def process_symbol(symbol, alert_queue):
             'macd_line': macd_line,
             'macd_signal': macd_signal,
             'macd_status': macd_status,
-            'avg_volume': avg_volume
+            'avg_volume': avg_volume,
+            'first_candle_pattern': pattern,
+            'first_candle_lower_wick': lower_wick_pct_val,
+            'first_candle_upper_wick': upper_wick_pct_val,
+            'first_candle_body': body_pct_val,
+            'first_candle_tick': first_tick,
+            'second_candle_tp_touched': second_tick
         }
 
         pattern_msg = f"1st Small Candle: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}%, Body: {body_pct_val:.2f}% {first_tick}"
