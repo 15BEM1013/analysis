@@ -1,8 +1,9 @@
-import ccxt
+import ccxt.pro
 import redis
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import asyncio
 import threading
 import time
 from google.cloud import storage
@@ -43,13 +44,7 @@ bucket = gcs_client.bucket(GCS_BUCKET_NAME)
 logger.info("GCS client initialized")
 
 logger.info("Initializing Binance client...")
-proxies = {
-    "http": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712",
-    "https": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712"
-}
-binance = ccxt.binance({
-    'proxies': proxies
-})
+binance = ccxt.pro.binance()  # No proxies
 logger.info("Binance client initialized")
 
 # Initialize Telegram bot
@@ -78,20 +73,20 @@ def calculate_rsi(data, periods=14):
         logger.error(f"Error calculating RSI: {e}")
         return None
 
-def fetch_symbols():
+async def fetch_symbols():
     global symbols
     try:
-        exchange_info = binance.fetch_markets()
-        symbols = [market['symbol'] for market in exchange_info if market['symbol'].endswith('/USDT')]
+        exchange_info = await binance.load_markets()
+        symbols = [market for market in exchange_info if market.endswith('/USDT')]
         logger.info(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
         send_telegram_message(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
     except Exception as e:
         logger.error(f"Error fetching symbols: {e}")
         send_telegram_message(f"❌ Error fetching symbols: {e}")
 
-def fetch_candles(symbol, timeframe='1h', limit=100):
+async def fetch_candles(symbol, timeframe='1h', limit=100):
     try:
-        candles = binance.fetch_ohlcv(symbol, timeframe, limit=limit)
+        candles = await binance.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
@@ -148,6 +143,7 @@ def load_trades():
     global trades
     try:
         trades = redis_client.hgetall('trades')
+        trades = {k: json.loads(v) for k, v in trades.items()}
         logger.info("Loaded trades from Redis")
     except Exception as e:
         logger.error(f"Error loading trades: {e}")
@@ -155,8 +151,8 @@ def load_trades():
 
 def check_tp_sl(symbol, entry_price, current_price):
     try:
-        tp = entry_price * 1.03  # 3% take profit
-        sl = entry_price * 0.97  # 3% stop loss
+        tp = float(entry_price) * 1.03  # 3% take profit
+        sl = float(entry_price) * 0.97  # 3% stop loss
         if current_price >= tp:
             return 'TP'
         elif current_price <= sl:
@@ -167,25 +163,39 @@ def check_tp_sl(symbol, entry_price, current_price):
         send_telegram_message(f"❌ Error checking TP/SL for {symbol}: {e}")
         return None
 
-def bot_thread():
+async def watch_ticker(symbol):
+    try:
+        while True:
+            ticker = await binance.watch_ticker(symbol)
+            return ticker['last']
+    except Exception as e:
+        logger.error(f"Error watching ticker for {symbol}: {e}")
+        send_telegram_message(f"❌ Error watching ticker for {symbol}: {e}")
+        return None
+
+async def bot_thread():
     logger.info("Starting bot thread...")
+    await fetch_symbols()
     while True:
         try:
             for symbol in symbols:
-                candles = fetch_candles(symbol)
+                candles = await fetch_candles(symbol)
                 if candles is None:
                     continue
                 rsi = calculate_rsi(candles)
                 if rsi is None:
                     continue
-                current_price = candles['close'].iloc[-1]
-                if check_rising_three(candles.tail(5).to_dict('records')):
+                current_price = await watch_ticker(symbol)
+                if current_price is None:
+                    continue
+                candles_records = candles.tail(5).to_dict('records')
+                if check_rising_three(candles_records):
                     message = f"{symbol} - RISING THREE PATTERN DETECTED at {current_price:.2f}, RSI: {rsi.iloc[-1]:.2f}"
                     send_telegram_message(message)
                     trades[symbol] = {'entry_price': current_price, 'timestamp': str(datetime.now())}
                     redis_client.hset('trades', symbol, json.dumps(trades[symbol]))
                     save_to_gcs(symbol, candles)
-                elif check_falling_three(candles.tail(5).to_dict('records')):
+                elif check_falling_three(candles_records):
                     message = f"{symbol} - FALLING THREE PATTERN DETECTED at {current_price:.2f}, RSI: {rsi.iloc[-1]:.2f}"
                     send_telegram_message(message)
                     trades[symbol] = {'entry_price': current_price, 'timestamp': str(datetime.now())}
@@ -198,16 +208,19 @@ def bot_thread():
                         send_telegram_message(message)
                         redis_client.hdel('trades', symbol)
                         del trades[symbol]
-                time.sleep(1)
-            time.sleep(60)
+                await asyncio.sleep(1)
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"Bot thread error: {e}")
             send_telegram_message(f"❌ Bot thread error: {e}")
-            time.sleep(60)
+            await asyncio.sleep(60)
 
 @app.route('/')
 def home():
     return "✅ Rising & Falling Three Pattern Bot is Live!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
 
 if __name__ == '__main__':
     logger.info("Starting application...")
@@ -221,6 +234,8 @@ if __name__ == '__main__':
         send_telegram_message(f"❌ Redis connection failed: {e}")
         exit(1)
     load_trades()
-    fetch_symbols()
-    threading.Thread(target=bot_thread, daemon=True).start()
-    app.run(host='0.0.0.0', port=8080)
+    # Start Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    # Run the async bot thread
+    asyncio.run(bot_thread())
