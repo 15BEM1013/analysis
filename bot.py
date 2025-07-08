@@ -542,7 +542,7 @@ def export_to_csv():
         avg_loss = closed_trades_df[closed_trades_df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
         win_rate_rising = closed_trades_df[closed_trades_df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'buy'].empty else 0.0
         win_rate_falling = closed_trades_df[closed_trades_df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'sell'].empty else 0.0
-        win_rate_obv_up = closed_trades_df[closed_trades_df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not df[df['obv_trend'] == 'Up'].empty else 0.0
+        win_rate_obv_up = df[df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not df[df['obv_trend'] == 'Up'].empty else 0.0
         win_rate_macd_bullish = closed_trades_df[closed_trades_df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['macd_status'] == 'Bullish'].empty else 0.0
         
         if not closed_trades_df.empty:
@@ -682,11 +682,14 @@ def process_symbol(symbol, alert_queue):
         upper_wick_pct_val = (upper_wick / total_range * 100) if total_range > 0 else 0
         lower_wick_pct_val = (lower_wick / total_range * 100) if total_range > 0 else 0
 
-        # Pattern detection for first small candle with pressure analysis
+        # Pattern detection for first small candle with tick logic
         def detect_candle_pattern(candle, is_bullish):
             body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
+            first_tick = '✅'
+            if upper_wick_pct > 3 * lower_wick_pct or lower_wick_pct > 3 * upper_wick_pct or body_pct < 10:
+                first_tick = '❌'
             pressure = None
             if body_pct < 10:
                 if not is_bullish and upper_wick_pct > 2 * lower_wick_pct:
@@ -701,18 +704,28 @@ def process_symbol(symbol, alert_queue):
             if body_pct < 5 or body_pct == 0:
                 if is_bullish:
                     if lower_wick_pct > 70 and upper_wick_pct < 10:
-                        return "Dragonfly Doji", pressure
+                        return "Dragonfly Doji", first_tick, pressure
                     elif upper_wick_pct > 70 and lower_wick_pct < 10:
-                        return "Gravestone Doji", pressure
+                        return "Gravestone Doji", first_tick, pressure
                 else:
                     if upper_wick_pct > 70 and lower_wick_pct < 10:
-                        return "Gravestone Doji", pressure
+                        return "Gravestone Doji", first_tick, pressure
                     elif lower_wick_pct > 70 and upper_wick_pct < 10:
-                        return "Dragonfly Doji", pressure
-                return "Doji", pressure
-            return "No Specific Pattern", pressure
+                        return "Dragonfly Doji", first_tick, pressure
+                return "Doji", first_tick, pressure
+            if is_bullish:
+                if lower_wick_pct > 70 and upper_wick_pct < 10:
+                    return "Dragonfly Doji", first_tick, pressure
+                elif upper_wick_pct > 70 and lower_wick_pct < 10:
+                    return "Gravestone Doji", first_tick, pressure
+            else:
+                if upper_wick_pct > 70 and lower_wick_pct < 10:
+                    return "Gravestone Doji", first_tick, pressure
+                elif lower_wick_pct > 70 and upper_wick_pct < 10:
+                    return "Dragonfly Doji", first_tick, pressure
+            return "Doji", first_tick, pressure
 
-        pattern, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle))
+        pattern, first_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle))
 
         if rising:
             sent_signals[(symbol, 'rising')] = signal_time
@@ -720,12 +733,14 @@ def process_symbol(symbol, alert_queue):
             sl = entry * (1 - SL_PCT)
             second_candle = candles[-2]
             tp_touched = second_candle[2] >= tp  # High touches TP
+            second_tick = '✅' if not tp_touched else '❌'
         else:
             sent_signals[(symbol, 'falling')] = signal_time
             tp = candles[-4][4]  # TP at big candle close
             sl = entry * (1 + SL_PCT)
             second_candle = candles[-2]
             tp_touched = second_candle[3] <= tp  # Low touches TP
+            second_tick = '✅' if not tp_touched else '❌'
 
         trade = {
             'side': 'buy' if rising else 'sell',
@@ -751,8 +766,8 @@ def process_symbol(symbol, alert_queue):
             'avg_volume': avg_volume
         }
 
-        pattern_msg = f"1st Small Candle Pattern: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}%, Body: {body_pct_val:.2f}%"
-        if pressure:
+        pattern_msg = f"1st Small Candle: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}%, Body: {body_pct_val:.2f}% {first_tick}"
+        if pressure and first_tick == '✅':
             pattern_msg += f" ({pressure})"
 
         msg = (
@@ -768,7 +783,7 @@ def process_symbol(symbol, alert_queue):
             f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
             f"Liquidity - {avg_volume:.0f} USDT\n"
             f"{pattern_msg}\n"
-            f"2nd Small Candle Touched TP: {'Yes' if tp_touched else 'No'}\n"
+            f"2nd Small Candle Touched TP: {second_tick}\n"
             f"entry - {entry}\n"
             f"tp - {tp}\n"
             f"sl - {sl:.4f}"
