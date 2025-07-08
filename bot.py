@@ -671,14 +671,48 @@ def process_symbol(symbol, alert_queue):
                 zigzag_status = 'Swing High'
                 zigzag_price = last_swing[1]
 
+        # Calculate candle components for pattern detection
+        first_candle = candles[-3]
+        open_price, high, low, close = first_candle[1], first_candle[2], first_candle[3], first_candle[4]
+        body = abs(open_price - close)
+        upper_wick = high - max(open_price, close)
+        lower_wick = min(open_price, close) - low
+        total_range = high - low
+
+        # Pattern detection for first small candle
+        def detect_candle_pattern(candle, is_bullish):
+            body_pct = body / total_range * 100 if total_range > 0 else 0
+            upper_wick_pct = upper_wick / total_range * 100 if total_range > 0 else 0
+            lower_wick_pct = lower_wick / total_range * 100 if total_range > 0 else 0
+
+            if body_pct < 5 or body == 0:
+                if is_bullish:
+                    if lower_wick_pct > 70 and upper_wick_pct < 10:
+                        return "Dragonfly Doji"
+                    elif upper_wick_pct > 70 and lower_wick_pct < 10:
+                        return "Gravestone Doji"
+                else:
+                    if upper_wick_pct > 70 and lower_wick_pct < 10:
+                        return "Gravestone Doji"
+                    elif lower_wick_pct > 70 and upper_wick_pct < 10:
+                        return "Dragonfly Doji"
+                return "Doji"
+            return "No Specific Pattern"
+
+        pattern = detect_candle_pattern(first_candle, is_bullish(first_candle))
+
         if rising:
             sent_signals[(symbol, 'rising')] = signal_time
-            tp = candles[-3][4]
+            tp = candles[-4][4]  # TP at big candle close
             sl = entry * (1 - SL_PCT)
+            second_candle = candles[-2]
+            tp_touched = second_candle[2] >= tp  # High touches TP
         else:
             sent_signals[(symbol, 'falling')] = signal_time
-            tp = candles[-3][4]
+            tp = candles[-4][4]  # TP at big candle close
             sl = entry * (1 + SL_PCT)
+            second_candle = candles[-2]
+            tp_touched = second_candle[3] <= tp  # Low touches TP
 
         trade = {
             'side': 'buy' if rising else 'sell',
@@ -716,6 +750,9 @@ def process_symbol(symbol, alert_queue):
             f"OBV Trend - {obv_trend}\n"
             f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
             f"Liquidity - {avg_volume:.0f} USDT\n"
+            f"1st Small Candle Pattern: {pattern}\n"
+            f"Lower Wick: {lower_wick:.4f}, Upper Wick: {upper_wick:.4f}, Body: {body:.4f}\n"
+            f"2nd Small Candle Touched TP: {'Yes' if tp_touched else 'No'}\n"
             f"entry - {entry}\n"
             f"tp - {tp}\n"
             f"sl - {sl:.4f}"
