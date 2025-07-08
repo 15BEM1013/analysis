@@ -123,9 +123,10 @@ def load_closed_trades():
 def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
+    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
     for attempt in range(retries):
         try:
-            response = requests.post(url, data=data, timeout=5).json()
+            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
             if response.get('ok'):
                 print(f"Telegram sent: {msg[:50]}...")
                 return response.get('result', {}).get('message_id')
@@ -141,8 +142,9 @@ def send_telegram(msg, retries=3):
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
+    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
     try:
-        response = requests.post(url, data=data, timeout=5).json()
+        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         if response.get('ok'):
             print(f"Telegram updated: {new_text[:50]}...")
         else:
@@ -153,6 +155,7 @@ def edit_telegram_message(message_id, new_text):
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
     try:
         if not os.path.exists(filename):
             print(f"File {filename} does not exist")
@@ -161,7 +164,7 @@ def send_csv_to_telegram(filename):
         with open(filename, 'rb') as f:
             data = {'chat_id': CHAT_ID, 'caption': f"CSV: {filename}"}
             files = {'document': f}
-            response = requests.post(url, data=data, files=files, timeout=10).json()
+            response = requests.post(url, data=data, files=files, proxies=proxies, timeout=10).json()
             if response.get('ok'):
                 print(f"Sent {filename} to Telegram")
                 send_telegram(f"📎 Sent {filename} to Telegram")
@@ -177,7 +180,11 @@ exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_API_SECRET'),
     'options': {'defaultType': 'future'},
-    'enableRateLimit': True
+    'enableRateLimit': True,
+    'proxies': {
+        'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712',
+        'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'
+    }
 })
 app = Flask(__name__)
 
