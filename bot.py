@@ -1,7 +1,7 @@
 import redis
 import json
 import os
-import ccxt.pro
+import ccxt
 import time
 import threading
 import requests
@@ -173,7 +173,7 @@ def send_csv_to_telegram(filename):
         send_telegram(f"❌ Error sending {filename} to Telegram: {e}")
 
 # === INIT ===
-exchange = ccxt.pro.binance({
+exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_API_SECRET'),
     'options': {'defaultType': 'future'},
