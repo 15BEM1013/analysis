@@ -8,3 +8,4 @@ numpy
 python-telegram-bot
 pandas
 redis
+ccxt.pro>=1.0.0 
