@@ -1,7 +1,7 @@
 import redis
 import json
 import os
-import ccxt
+import ccxt.pro
 import time
 import threading
 import requests
@@ -38,12 +38,6 @@ ZIGZAG_DEVIATION = 5.0
 ZIGZAG_BACKSTEP = 3
 ZIGZAG_TOLERANCE = 0.005
 NUM_CHUNKS = 4
-
-# === PROXY ===
-proxies = {
-    "http": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712",
-    "https": "http://sgkgjbve:x9swvp7b0epc@207.244.217.165:6712"
-}
 
 # === Redis Client ===
 redis_client = redis.Redis(
@@ -131,7 +125,7 @@ def send_telegram(msg, retries=3):
     data = {'chat_id': CHAT_ID, 'text': msg}
     for attempt in range(retries):
         try:
-            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+            response = requests.post(url, data=data, timeout=5).json()
             if response.get('ok'):
                 print(f"Telegram sent: {msg[:50]}...")
                 return response.get('result', {}).get('message_id')
@@ -148,7 +142,7 @@ def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
-        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+        response = requests.post(url, data=data, timeout=5).json()
         if response.get('ok'):
             print(f"Telegram updated: {new_text[:50]}...")
         else:
@@ -167,7 +161,7 @@ def send_csv_to_telegram(filename):
         with open(filename, 'rb') as f:
             data = {'chat_id': CHAT_ID, 'caption': f"CSV: {filename}"}
             files = {'document': f}
-            response = requests.post(url, data=data, files=files, proxies=proxies, timeout=10).json()
+            response = requests.post(url, data=data, files=files, timeout=10).json()
             if response.get('ok'):
                 print(f"Sent {filename} to Telegram")
                 send_telegram(f"📎 Sent {filename} to Telegram")
@@ -179,11 +173,10 @@ def send_csv_to_telegram(filename):
         send_telegram(f"❌ Error sending {filename} to Telegram: {e}")
 
 # === INIT ===
-exchange = ccxt.binance({
+exchange = ccxt.pro.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_API_SECRET'),
     'options': {'defaultType': 'future'},
-    'proxies': proxies,
     'enableRateLimit': True
 })
 app = Flask(__name__)
@@ -422,7 +415,7 @@ def check_tp_sl():
                             'zigzag_status': trade['zigzag_status'],
                             'zigzag_price': trade['zigzag_price'],
                             'signal_time': trade['signal_time'],
-                            'signal_weekday': trade['signal_weekday'],  # Add signal weekday
+                            'signal_weekday': trade['signal_weekday'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
@@ -432,7 +425,7 @@ def check_tp_sl():
                             ema_status = trade['ema_status']
                             new_msg = (
                                 f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                                f"Signal Time: {trade['signal_time']} ({trade['signal_weekday']})\n"  # Add weekday
+                                f"Signal Time: {trade['signal_time']} ({trade['signal_weekday']})\n"
                                 f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
                                 f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
                                 f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
@@ -512,7 +505,7 @@ def process_symbol(symbol, alert_queue):
 
         signal_time = candles[-2][0]
         signal_entry_time = get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
-        signal_weekday = get_ist_time().strftime('%A')  # Capture weekday
+        signal_weekday = get_ist_time().strftime('%A')
         if (symbol, 'rising') in sent_signals and sent_signals[(symbol, 'rising')] == signal_time:
             return
         if (symbol, 'falling') in sent_signals and sent_signals[(symbol, 'falling')] == signal_time:
@@ -610,12 +603,12 @@ def process_symbol(symbol, alert_queue):
             'zigzag_status': zigzag_status,
             'zigzag_price': zigzag_price,
             'signal_time': signal_entry_time,
-            'signal_weekday': signal_weekday  # Add signal weekday
+            'signal_weekday': signal_weekday
         }
 
         msg = (
             f"{symbol} - {'RISING' if rising else 'FALLING'} PATTERN\n"
-            f"Signal Time: {signal_entry_time} ({signal_weekday})\n"  # Add weekday
+            f"Signal Time: {signal_entry_time} ({signal_weekday})\n"
             f"{'Above' if rising else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
             f"ema 9 {'above' if rising else 'below'} 21 - {ema_status['ema9_ema21']}\n"
             f"RSI (14) - {rsi:.2f} ({rsi_category})\n"
