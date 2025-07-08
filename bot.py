@@ -5,7 +5,7 @@ import ccxt
 import time
 import threading
 import requests
-from flask import Flask, send_file
+from flask import Flask, send_file, jsonify
 import glob
 from datetime import datetime
 import pytz
@@ -38,6 +38,9 @@ ZIGZAG_DEVIATION = 5.0
 ZIGZAG_BACKSTEP = 3
 ZIGZAG_TOLERANCE = 0.005
 NUM_CHUNKS = 4
+MACD_FAST = 12  # Fast EMA period for MACD
+MACD_SLOW = 26  # Slow EMA period for MACD
+MACD_SIGNAL = 9  # Signal line period for MACD
 
 # === Redis Client ===
 redis_client = redis.Redis(
@@ -218,6 +221,37 @@ def download_file(filename):
     except Exception as e:
         return f"Error downloading file: {str(e)}", 500
 
+@app.route('/stats')
+def stats():
+    try:
+        closed_trades = load_closed_trades()
+        df = pd.DataFrame(closed_trades)
+        if df.empty:
+            return jsonify({"error": "No closed trades available"}), 404
+        total_trades = len(df)
+        win_trades = len(df[df['pnl'] > 0])
+        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+        avg_win = df[df['pnl'] > 0]['pnl'].mean() if win_trades > 0 else 0.0
+        avg_loss = df[df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
+        win_rate_rising = df[df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not df[df['side'] == 'buy'].empty else 0.0
+        win_rate_falling = df[df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not df[df['side'] == 'sell'].empty else 0.0
+        win_rate_obv_up = df[df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not df[df['obv_trend'] == 'Up'].empty else 0.0
+        win_rate_macd_bullish = df[df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not df[df['macd_status'] == 'Bullish'].empty else 0.0
+        stats = {
+            "total_trades": total_trades,
+            "win_trades": win_trades,
+            "win_rate": round(win_rate, 2),
+            "avg_win": round(avg_win, 2),
+            "avg_loss": round(avg_loss, 2),
+            "win_rate_rising": round(win_rate_rising, 2),
+            "win_rate_falling": round(win_rate_falling, 2),
+            "win_rate_obv_up": round(win_rate_obv_up, 2),
+            "win_rate_macd_bullish": round(win_rate_macd_bullish, 2)
+        }
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -317,6 +351,31 @@ def calculate_ema(candles, period=21):
     for close in closes[period:]:
         ema = (close - ema) * multiplier + ema
     return ema
+
+def calculate_obv(candles):
+    closes = np.array([c[4] for c in candles])
+    volumes = np.array([c[5] for c in candles])
+    obv = [0]
+    for i in range(1, len(candles)):
+        if closes[i] > closes[i-1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i-1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+    obv_trend = 'Up' if obv[-1] > obv[-5] else 'Down' if obv[-1] < obv[-5] else 'Flat'
+    return obv_trend
+
+def calculate_macd(candles, fast=12, slow=26, signal=9):
+    closes = np.array([c[4] for c in candles])
+    if len(closes) < slow:
+        return None, None, None
+    ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean().values
+    ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean().values
+    macd_line = ema_fast - ema_slow
+    signal_line = pd.Series(macd_line).ewm(span=signal, adjust=False).mean().values
+    macd_status = 'Bullish' if macd_line[-1] > signal_line[-1] else 'Bearish' if macd_line[-1] < signal_line[-1] else 'Neutral'
+    return macd_line[-1], signal_line[-1], macd_status
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
@@ -423,6 +482,11 @@ def check_tp_sl():
                             'zigzag_price': trade['zigzag_price'],
                             'signal_time': trade['signal_time'],
                             'signal_weekday': trade['signal_weekday'],
+                            'obv_trend': trade['obv_trend'],
+                            'macd_line': trade['macd_line'],
+                            'macd_signal': trade['macd_signal'],
+                            'macd_status': trade['macd_status'],
+                            'avg_volume': trade['avg_volume'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
@@ -439,6 +503,9 @@ def check_tp_sl():
                                 f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
                                 f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
                                 f"Zig Zag - {trade['zigzag_status']}\n"
+                                f"OBV Trend - {trade['obv_trend']}\n"
+                                f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
+                                f"Liquidity - {trade['avg_volume']:.0f} USDT\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
                                 f"sl - {trade['sl']:.4f}\n"
@@ -469,6 +536,15 @@ def export_to_csv():
         closed_trades_df = pd.DataFrame(all_closed_trades)
         total_pnl = closed_trades_df['pnl'].sum() if not closed_trades_df.empty else 0.0
         total_trades = len(closed_trades_df) if not closed_trades_df.empty else 0
+        win_trades = len(closed_trades_df[closed_trades_df['pnl'] > 0]) if not closed_trades_df.empty else 0
+        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+        avg_win = closed_trades_df[closed_trades_df['pnl'] > 0]['pnl'].mean() if win_trades > 0 else 0.0
+        avg_loss = closed_trades_df[closed_trades_df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
+        win_rate_rising = closed_trades_df[closed_trades_df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'buy'].empty else 0.0
+        win_rate_falling = closed_trades_df[closed_trades_df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'sell'].empty else 0.0
+        win_rate_obv_up = closed_trades_df[closed_trades_df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['obv_trend'] == 'Up'].empty else 0.0
+        win_rate_macd_bullish = closed_trades_df[closed_trades_df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['macd_status'] == 'Bullish'].empty else 0.0
+        
         if not closed_trades_df.empty:
             exported_trades = redis_client.smembers('exported_trades') or set()
             closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time'] + ':' + closed_trades_df['entry'].astype(str) + ':' + closed_trades_df['pnl'].astype(str)
@@ -490,8 +566,15 @@ def export_to_csv():
             send_telegram("📊 No closed trades to export")
         summary_msg = (
             f"🔍 Scan Completed at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📊 Closed Trades: {total_trades}\n"
-            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl / CAPITAL * 100:.2f}%)"
+            f"📊 Total Trades: {total_trades}\n"
+            f"🏆 Win Rate: {win_rate:.2f}% ({win_trades}/{total_trades})\n"
+            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl / CAPITAL * 100:.2f}%)\n"
+            f"📈 Avg Win: ${avg_win:.2f}\n"
+            f"📉 Avg Loss: ${avg_loss:.2f}\n"
+            f"📊 Rising Three Win Rate: {win_rate_rising:.2f}%\n"
+            f"📊 Falling Three Win Rate: {win_rate_falling:.2f}%\n"
+            f"📊 OBV Up Win Rate: {win_rate_obv_up:.2f}%\n"
+            f"📊 MACD Bullish Win Rate: {win_rate_macd_bullish:.2f}%"
         )
         send_telegram(summary_msg)
     except Exception as e:
@@ -524,7 +607,10 @@ def process_symbol(symbol, alert_queue):
         adx = calculate_adx(candles, period=ADX_PERIOD)
         big_candle_rsi = calculate_rsi(candles[:-3], period=RSI_PERIOD)
         swing_points = calculate_zigzag(candles, depth=ZIGZAG_DEPTH, deviation=ZIGZAG_DEVIATION, backstep=ZIGZAG_BACKSTEP)
-        if ema21 is None or ema9 is None or rsi is None or adx is None or big_candle_rsi is None:
+        obv_trend = calculate_obv(candles)
+        macd_line, macd_signal, macd_status = calculate_macd(candles, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
+        avg_volume = np.mean([c[5] for c in candles])
+        if any(v is None for v in [ema21, ema9, rsi, adx, big_candle_rsi, macd_line]):
             print(f"{symbol}: Skipped, indicator calculation failed")
             return
 
@@ -532,12 +618,12 @@ def process_symbol(symbol, alert_queue):
         falling = detect_falling_three(candles)
         if not (rising or falling):
             c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-            avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
+            avg_volume_candles = sum(c[5] for c in candles[-6:-1]) / 5
             reasons = []
             if is_bullish(c2) and not rising:
                 if body_pct(c2) < MIN_BIG_BODY_PCT:
                     reasons.append(f"Big candle body {body_pct(c2):.2f}% < {MIN_BIG_BODY_PCT}%")
-                if c2[5] <= avg_volume:
+                if c2[5] <= avg_volume_candles:
                     reasons.append("Big candle volume not above average")
                 if not (is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT):
                     reasons.append(f"Small candle 1 not bearish or body {body_pct(c1):.2f}% > {MAX_SMALL_BODY_PCT}%")
@@ -548,7 +634,7 @@ def process_symbol(symbol, alert_queue):
             elif is_bearish(c2) and not falling:
                 if body_pct(c2) < MIN_BIG_BODY_PCT:
                     reasons.append(f"Big candle body {body_pct(c2):.2f}% < {MIN_BIG_BODY_PCT}%")
-                if c2[5] <= avg_volume:
+                if c2[5] <= avg_volume_candles:
                     reasons.append("Big candle volume not above average")
                 if not (is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT):
                     reasons.append(f"Small candle 1 not bullish or body {body_pct(c1):.2f}% > {MAX_SMALL_BODY_PCT}%")
@@ -610,7 +696,12 @@ def process_symbol(symbol, alert_queue):
             'zigzag_status': zigzag_status,
             'zigzag_price': zigzag_price,
             'signal_time': signal_entry_time,
-            'signal_weekday': signal_weekday
+            'signal_weekday': signal_weekday,
+            'obv_trend': obv_trend,
+            'macd_line': macd_line,
+            'macd_signal': macd_signal,
+            'macd_status': macd_status,
+            'avg_volume': avg_volume
         }
 
         msg = (
@@ -622,6 +713,9 @@ def process_symbol(symbol, alert_queue):
             f"Big Candle RSI - {big_candle_rsi:.2f} ({big_candle_rsi_status})\n"
             f"ADX (14) - {adx:.2f} ({adx_category})\n"
             f"Zig Zag - {zigzag_status}\n"
+            f"OBV Trend - {obv_trend}\n"
+            f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
+            f"Liquidity - {avg_volume:.0f} USDT\n"
             f"entry - {entry}\n"
             f"tp - {tp}\n"
             f"sl - {sl:.4f}"
