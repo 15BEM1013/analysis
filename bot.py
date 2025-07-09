@@ -470,54 +470,54 @@ def check_tp_sl():
                             'sl': trade['sl'],
                             'pnl': profit,
                             'pnl_pct': pnl,
-                            'category': trade.get('category', ''),
-                            'ema_status': trade.get('ema_status', {'price_ema21': '⚠️', 'ema9_ema21': '⚠️'}),
-                            'rsi': trade.get('rsi', 0.0),
-                            'rsi_category': trade.get('rsi_category', 'Unknown'),
-                            'adx': trade.get('adx', 0.0),
-                            'adx_category': trade.get('adx_category', 'Unknown'),
-                            'big_candle_rsi': trade.get('big_candle_rsi', 0.0),
-                            'big_candle_rsi_status': trade.get('big_candle_rsi_status', 'Unknown'),
-                            'zigzag_status': trade.get('zigzag_status', 'No Swing'),
-                            'zigzag_price': trade.get('zigzag_price', ''),
-                            'signal_time': trade.get('signal_time', ''),
-                            'signal_weekday': trade.get('signal_weekday', ''),
-                            'obv_trend': trade.get('obv_trend', 'Flat'),
-                            'macd_line': trade.get('macd_line', 0.0),
-                            'macd_signal': trade.get('macd_signal', 0.0),
-                            'macd_status': trade.get('macd_status', 'Neutral'),
-                            'avg_volume': trade.get('avg_volume', 0.0),
+                            'category': trade['category'],
+                            'ema_status': trade['ema_status'],
+                            'rsi': trade['rsi'],
+                            'rsi_category': trade['rsi_category'],
+                            'adx': trade['adx'],
+                            'adx_category': trade['adx_category'],
+                            'big_candle_rsi': trade['big_candle_rsi'],
+                            'big_candle_rsi_status': trade['big_candle_rsi_status'],
+                            'zigzag_status': trade['zigzag_status'],
+                            'zigzag_price': trade['zigzag_price'],
+                            'signal_time': trade['signal_time'],
+                            'signal_weekday': trade['signal_weekday'],
+                            'obv_trend': trade['obv_trend'],
+                            'macd_line': trade['macd_line'],
+                            'macd_signal': trade['macd_signal'],
+                            'macd_status': trade['macd_status'],
+                            'avg_volume': trade['avg_volume'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S'),
-                            'first_candle_pattern': trade.get('first_candle_pattern', 'Unknown'),
-                            'first_candle_lower_wick': trade.get('first_candle_lower_wick', 0.0),
-                            'first_candle_upper_wick': trade.get('first_candle_upper_wick', 0.0),
-                            'first_candle_body': trade.get('first_candle_body', 0.0),
-                            'first_candle_tick': trade.get('first_candle_tick', '⚠️'),
-                            'second_candle_tp_touched': trade.get('second_candle_tp_touched', '⚠️')
+                            'first_candle_pattern': trade['first_candle_pattern'],
+                            'first_candle_lower_wick': trade['first_candle_lower_wick'],
+                            'first_candle_upper_wick': trade['first_candle_upper_wick'],
+                            'first_candle_body': trade['first_candle_body'],
+                            'first_candle_tick': trade['first_candle_tick'],
+                            'second_candle_tp_touched': trade['second_candle_tp_touched']
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
                         if not redis_client.sismember('exported_trades', trade_id):
                             save_closed_trades(closed_trade)
                             trades_to_remove.append(sym)
-                            ema_status = closed_trade['ema_status']
+                            ema_status = trade['ema_status']
                             new_msg = (
-                                f"{sym} - {'RISING' if closed_trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                                f"Signal Time: {closed_trade['signal_time']} ({closed_trade['signal_weekday']})\n"
-                                f"{'Above' if closed_trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                                f"ema 9 {'above' if closed_trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
-                                f"RSI (14) - {closed_trade['rsi']:.2f} ({closed_trade['rsi_category']})\n"
-                                f"Big Candle RSI - {closed_trade['big_candle_rsi']:.2f} ({closed_trade['big_candle_rsi_status']})\n"
-                                f"ADX (14) - {closed_trade['adx']:.2f} ({closed_trade['adx_category']})\n"
-                                f"Zig Zag - {closed_trade['zigzag_status']}\n"
-                                f"OBV Trend - {closed_trade['obv_trend']}\n"
-                                f"MACD - {closed_trade['macd_status']} (Line: {closed_trade['macd_line']:.2f}, Signal: {closed_trade['macd_signal']:.2f})\n"
-                                f"Liquidity - {closed_trade['avg_volume']:.0f} USDT\n"
-                                f"1st Small Candle: {closed_trade['first_candle_pattern']}, Lower: {closed_trade['first_candle_lower_wick']:.2f}%, "
-                                f"Upper: {closed_trade['first_candle_upper_wick']:.2f}%, Body: {closed_trade['first_candle_body']:.2f}% {closed_trade['first_candle_tick']}\n"
-                                f"2nd Small Candle Touched TP: {closed_trade['second_candle_tp_touched']}\n"
-                                f"entry - {closed_trade['entry']}\n"
-                                f"tp - {closed_trade['tp']}\n"
-                                f"sl - {closed_trade['sl']:.4f}\n"
+                                f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                                f"Signal Time: {trade['signal_time']} ({trade['signal_weekday']})\n"
+                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
+                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                                f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
+                                f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
+                                f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
+                                f"Zig Zag - {trade['zigzag_status']}\n"
+                                f"OBV Trend - {trade['obv_trend']}\n"
+                                f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
+                                f"Liquidity - {trade['avg_volume']:.0f} USDT\n"
+                                f"1st Small Candle: {trade['first_candle_pattern']}, Lower: {trade['first_candle_lower_wick']:.2f}%, "
+                                f"Upper: {trade['first_candle_upper_wick']:.2f}%, Body: {trade['first_candle_body']:.2f}% {trade['first_candle_tick']}\n"
+                                f"2nd Small Candle Touched TP: {trade['second_candle_tp_touched']}\n"
+                                f"entry - {trade['entry']}\n"
+                                f"tp - {trade['tp']}\n"
+                                f"sl - {trade['sl']:.4f}\n"
                                 f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                             )
                             edit_telegram_message(trade['msg_id'], new_msg)
@@ -602,17 +602,7 @@ def process_symbol(symbol, alert_queue):
                 break
             time.sleep(1)
 
-        # Get current IST time
-        current_time = get_ist_time()
-        latest_candle_time = datetime.fromtimestamp(candles[-1][0] / 1000, tz=pytz.timezone('Asia/Kolkata'))
-        time_diff = (current_time - latest_candle_time).total_seconds()
-
-        # Check if the latest candle has closed (at least 15 minutes have passed since its open)
-        if time_diff < 900:  # 900 seconds = 15 minutes
-            print(f"{symbol}: Waiting for 15m candle close, time difference: {time_diff:.2f}s")
-            return
-
-        signal_time = candles[-2][0]  # Use the second-to-last candle as the signal time (fully closed)
+        signal_time = candles[-2][0]
         signal_entry_time = get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
         signal_weekday = get_ist_time().strftime('%A')
         if (symbol, 'rising') in sent_signals and sent_signals[(symbol, 'rising')] == signal_time:
