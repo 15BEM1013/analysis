@@ -439,7 +439,8 @@ def check_tp_sl():
                             'first_candle_lower_wick': trade['first_candle_lower_wick'],
                             'first_candle_upper_wick': trade['first_candle_upper_wick'],
                             'first_candle_body': trade['first_candle_body'],
-                            'first_candle_tick': trade['first_candle_tick'],
+                            'first_candle_wick_tick': trade['first_candle_wick_tick'],
+                            'first_candle_body_tick': trade['first_candle_body_tick'],
                             'second_candle_tp_touched': trade['second_candle_tp_touched']
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
@@ -458,7 +459,8 @@ def check_tp_sl():
                                 f"OBV Trend - {trade['obv_trend']}\n"
                                 f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
                                 f"1st Small Candle: {trade['first_candle_pattern']}, Lower: {trade['first_candle_lower_wick']:.2f}%, "
-                                f"Upper: {trade['first_candle_upper_wick']:.2f}%, Body: {trade['first_candle_body']:.2f}% {trade['first_candle_tick']}\n"
+                                f"Upper: {trade['first_candle_upper_wick']:.2f}% {trade['first_candle_wick_tick']}\n"
+                                f"Body: {trade['first_candle_body']:.2f}% {trade['first_candle_body_tick']}\n"
                                 f"2nd Small Candle Touched TP: {trade['second_candle_tp_touched']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
@@ -622,48 +624,46 @@ def process_symbol(symbol, alert_queue):
             body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
-            first_tick = '✅'
+            wick_tick = '✅'
+            body_tick = '✅' if body_pct >= 10 else '⚠️'
             pressure = None
 
-            if body_pct < 10:
-                first_tick = '⚠️'
-            else:
-                if pattern_type == 'rising':
-                    if upper_wick_pct >= 2.5 * lower_wick_pct:
-                        first_tick = '❌'
-                    elif lower_wick_pct > 2.5 * upper_wick_pct:
-                        first_tick = '🟣'
-                elif pattern_type == 'falling':
-                    if lower_wick_pct >= 2.5 * upper_wick_pct:
-                        first_tick = '❌'
-                    elif upper_wick_pct > 2.5 * lower_wick_pct:
-                        first_tick = '🟣'
+            if pattern_type == 'rising':
+                if upper_wick_pct >= 2.5 * lower_wick_pct:
+                    wick_tick = '❌'
+                elif lower_wick_pct > 2.5 * upper_wick_pct:
+                    wick_tick = '🟣'
+            elif pattern_type == 'falling':
+                if lower_wick_pct >= 2.5 * upper_wick_pct:
+                    wick_tick = '❌'
+                elif upper_wick_pct > 2.5 * lower_wick_pct:
+                    wick_tick = '🟣'
 
             if body_pct < 5 or body_pct == 0:
                 if is_bullish:
                     if lower_wick_pct > 70 and upper_wick_pct < 10:
-                        return "Dragonfly Doji", first_tick, pressure
+                        return "Dragonfly Doji", wick_tick, body_tick, pressure
                     elif upper_wick_pct > 70 and lower_wick_pct < 10:
-                        return "Gravestone Doji", first_tick, pressure
+                        return "Gravestone Doji", wick_tick, body_tick, pressure
                 else:
                     if upper_wick_pct > 70 and lower_wick_pct < 10:
-                        return "Gravestone Doji", first_tick, pressure
+                        return "Gravestone Doji", wick_tick, body_tick, pressure
                     elif lower_wick_pct > 70 and upper_wick_pct < 10:
-                        return "Dragonfly Doji", first_tick, pressure
-                return "Doji", first_tick, pressure
+                        return "Dragonfly Doji", wick_tick, body_tick, pressure
+                return "Doji", wick_tick, body_tick, pressure
             if is_bullish:
                 if lower_wick_pct > 70 and upper_wick_pct < 10:
-                    return "Dragonfly Doji", first_tick, pressure
+                    return "Dragonfly Doji", wick_tick, body_tick, pressure
                 elif upper_wick_pct > 70 and lower_wick_pct < 10:
-                    return "Gravestone Doji", first_tick, pressure
+                    return "Gravestone Doji", wick_tick, body_tick, pressure
             else:
                 if upper_wick_pct > 70 and lower_wick_pct < 10:
-                    return "Gravestone Doji", first_tick, pressure
+                    return "Gravestone Doji", wick_tick, body_tick, pressure
                 elif lower_wick_pct > 70 and upper_wick_pct < 10:
-                    return "Dragonfly Doji", first_tick, pressure
-            return "Doji", first_tick, pressure
+                    return "Dragonfly Doji", wick_tick, body_tick, pressure
+            return "Doji", wick_tick, body_tick, pressure
 
-        pattern, first_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle), 'rising' if rising else 'falling')
+        pattern, wick_tick, body_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle), 'rising' if rising else 'falling')
 
         if rising:
             sent_signals[(symbol, 'rising')] = signal_time
@@ -703,12 +703,16 @@ def process_symbol(symbol, alert_queue):
             'first_candle_lower_wick': lower_wick_pct_val,
             'first_candle_upper_wick': upper_wick_pct_val,
             'first_candle_body': body_pct_val,
-            'first_candle_tick': first_tick,
+            'first_candle_wick_tick': wick_tick,
+            'first_candle_body_tick': body_tick,
             'second_candle_tp_touched': second_tick
         }
 
-        pattern_msg = f"1st Small Candle: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}%, Body: {body_pct_val:.2f}% {first_tick}"
-        if pressure and first_tick == '✅':
+        pattern_msg = (
+            f"1st Small Candle: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}% {wick_tick}\n"
+            f"Body: {body_pct_val:.2f}% {body_tick}"
+        )
+        if pressure and wick_tick == '✅':
             pattern_msg += f" ({pressure})"
 
         msg = (
@@ -723,7 +727,7 @@ def process_symbol(symbol, alert_queue):
             f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
             f"{pattern_msg}\n"
             f"2nd Small Candle Touched TP: {second_tick}\n"
-            f"entry - {trade['entry']}\n"
+            f"entry - {entry}\n"
             f"tp - {tp}\n"
             f"sl - {sl:.4f}"
         )
