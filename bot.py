@@ -65,7 +65,7 @@ def load_trades():
     global open_trades
     try:
         data = redis_client.get('open_trades')
-              if data:
+        if data:
             open_trades = json.loads(data)
             print(f"Loaded {len(open_trades)} trades from Redis")
         else:
@@ -723,7 +723,7 @@ def process_symbol(symbol, alert_queue):
             f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
             f"{pattern_msg}\n"
             f"2nd Small Candle Touched TP: {second_tick}\n"
-            f"entry - {entry}\n"
+            f"entry - {trade['entry']}\n"
             f"tp - {tp}\n"
             f"sl - {sl:.4f}"
         )
@@ -744,7 +744,7 @@ def run_bot():
         threading.Thread(target=check_tp_sl, daemon=True).start()
         while True:
             symbols = get_symbols()
-            chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
+            chunk_size = math.ceil(len(symbols) / MAX_WORKERS)
             chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
             for chunk in chunks:
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
