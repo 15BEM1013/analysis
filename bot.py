@@ -65,7 +65,7 @@ def load_trades():
     global open_trades
     try:
         data = redis_client.get('open_trades')
-        \n        if data:
+              if data:
             open_trades = json.loads(data)
             print(f"Loaded {len(open_trades)} trades from Redis")
         else:
