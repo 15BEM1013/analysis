@@ -290,7 +290,7 @@ def calculate_adx(candles, period=14):
         low_diff = lows[i-1] - lows[i]
         plus_dm[i-1] = high_diff if high_diff > low_diff and high_diff > 0 else 0
         minus_dm[i-1] = low_diff if low_diff > 0 else 0
-        tr[i-1] = max(highs[i] - lows Excerpt of the rest of the code remains unchanged:
+        tr[i-1] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
 [i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
     atr = np.mean(tr[-period:])
     if atr == 0:
