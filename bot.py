@@ -33,14 +33,9 @@ TP_SL_CHECK_INTERVAL = 30
 CLOSED_TRADE_CSV = '/tmp/closed_trades.csv'
 RSI_PERIOD = 14
 ADX_PERIOD = 14
-ZIGZAG_DEPTH = 12
-ZIGZAG_DEVIATION = 5.0
-ZIGZAG_BACKSTEP = 3
-ZIGZAG_TOLERANCE = 0.005
-NUM_CHUNKS = 4
-MACD_FAST = 12  # Fast EMA period for MACD
-MACD_SLOW = 26  # Slow EMA period for MACD
-MACD_SIGNAL = 9  # Signal line period for MACD
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
 
 # === Redis Client ===
 redis_client = redis.Redis(
@@ -70,7 +65,7 @@ def load_trades():
     global open_trades
     try:
         data = redis_client.get('open_trades')
-        if data:
+        \n        if data:
             open_trades = json.loads(data)
             print(f"Loaded {len(open_trades)} trades from Redis")
         else:
@@ -126,7 +121,7 @@ def load_closed_trades():
 def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
+    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
@@ -145,7 +140,7 @@ def send_telegram(msg, retries=3):
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
-    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
+    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
     try:
         response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         if response.get('ok'):
@@ -158,7 +153,7 @@ def edit_telegram_message(message_id, new_text):
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
+    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
     try:
         if not os.path.exists(filename):
             print(f"File {filename} does not exist")
@@ -185,8 +180,8 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'future'},
     'enableRateLimit': True,
     'proxies': {
-        'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742',
-        'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'
+        'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712',
+        'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'
     }
 })
 app = Flask(__name__)
@@ -299,49 +294,6 @@ def calculate_adx(candles, period=14):
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) != 0 else 0
     return 100 * dx
 
-def calculate_zigzag(candles, depth=12, deviation=5.0, backstep=3):
-    highs = np.array([c[2] for c in candles])
-    lows = np.array([c[3] for c in candles])
-    swing_points = []
-    last_high = last_low = None
-    direction = 0
-    dev = deviation / 100
-
-    for i in range(depth, len(candles) - backstep):
-        is_low = True
-        for j in range(max(0, i - depth), min(len(candles), i + backstep + 1)):
-            if j != i and lows[i] > lows[j]:
-                is_low = False
-                break
-        if is_low:
-            if last_low is None or (direction == 1 and lows[i] < last_low[1]):
-                if last_low is None or (lows[i] != 0 and (highs[i] - lows[i]) / lows[i] >= dev):
-                    last_low = (i, lows[i])
-                    if direction == 1:
-                        swing_points.append((last_high[0], last_high[1], 'high'))
-                        swing_points.append((last_low[0], last_low[1], 'low'))
-                        direction = -1
-                    elif direction == 0:
-                        direction = -1
-
-        is_high = True
-        for j in range(max(0, i - depth), min(len(candles), i + backstep + 1)):
-            if j != i and highs[i] < highs[j]:
-                is_high = False
-                break
-        if is_high:
-            if last_high is None or (direction == -1 and highs[i] > last_high[1]):
-                if last_low is None or (lows[i] != 0 and (highs[i] - lows[i]) / lows[i] >= dev):
-                    last_high = (i, highs[i])
-                    if direction == -1:
-                        swing_points.append((last_low[0], last_low[1], 'low'))
-                        swing_points.append((last_high[0], last_high[1], 'high'))
-                        direction = 1
-                    elif direction == 0:
-                        direction = 1
-
-    return swing_points
-
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
     if len(closes) < period:
@@ -380,32 +332,30 @@ def calculate_macd(candles, fast=12, slow=26, signal=9):
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
-    big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+    big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT
     small_red_1 = (
         is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         lower_wick_pct(c1) >= MIN_LOWER_WICK_PCT and
-        c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+        c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3
     )
     small_red_0 = (
         is_bearish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
         lower_wick_pct(c0) >= MIN_LOWER_WICK_PCT and
-        c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3
     )
     volume_decreasing = c1[5] > c0[5]
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
-    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
-        c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+        c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3
     )
     small_green_0 = (
         is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
-        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
@@ -478,15 +428,12 @@ def check_tp_sl():
                             'adx_category': trade['adx_category'],
                             'big_candle_rsi': trade['big_candle_rsi'],
                             'big_candle_rsi_status': trade['big_candle_rsi_status'],
-                            'zigzag_status': trade['zigzag_status'],
-                            'zigzag_price': trade['zigzag_price'],
                             'signal_time': trade['signal_time'],
                             'signal_weekday': trade['signal_weekday'],
                             'obv_trend': trade['obv_trend'],
                             'macd_line': trade['macd_line'],
                             'macd_signal': trade['macd_signal'],
                             'macd_status': trade['macd_status'],
-                            'avg_volume': trade['avg_volume'],
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S'),
                             'first_candle_pattern': trade['first_candle_pattern'],
                             'first_candle_lower_wick': trade['first_candle_lower_wick'],
@@ -508,10 +455,8 @@ def check_tp_sl():
                                 f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
                                 f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
                                 f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
-                                f"Zig Zag - {trade['zigzag_status']}\n"
                                 f"OBV Trend - {trade['obv_trend']}\n"
                                 f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
-                                f"Liquidity - {trade['avg_volume']:.0f} USDT\n"
                                 f"1st Small Candle: {trade['first_candle_pattern']}, Lower: {trade['first_candle_lower_wick']:.2f}%, "
                                 f"Upper: {trade['first_candle_upper_wick']:.2f}%, Body: {trade['first_candle_body']:.2f}% {trade['first_candle_tick']}\n"
                                 f"2nd Small Candle Touched TP: {trade['second_candle_tp_touched']}\n"
@@ -615,10 +560,8 @@ def process_symbol(symbol, alert_queue):
         rsi = calculate_rsi(candles, period=RSI_PERIOD)
         adx = calculate_adx(candles, period=ADX_PERIOD)
         big_candle_rsi = calculate_rsi(candles[:-3], period=RSI_PERIOD)
-        swing_points = calculate_zigzag(candles, depth=ZIGZAG_DEPTH, deviation=ZIGZAG_DEVIATION, backstep=ZIGZAG_BACKSTEP)
         obv_trend = calculate_obv(candles)
         macd_line, macd_signal, macd_status = calculate_macd(candles, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
-        avg_volume = np.mean([c[5] for c in candles])
         if any(v is None for v in [ema21, ema9, rsi, adx, big_candle_rsi, macd_line]):
             print(f"{symbol}: Skipped, indicator calculation failed")
             return
@@ -627,13 +570,10 @@ def process_symbol(symbol, alert_queue):
         falling = detect_falling_three(candles)
         if not (rising or falling):
             c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-            avg_volume_candles = sum(c[5] for c in candles[-6:-1]) / 5
             reasons = []
             if is_bullish(c2) and not rising:
                 if body_pct(c2) < MIN_BIG_BODY_PCT:
                     reasons.append(f"Big candle body {body_pct(c2):.2f}% < {MIN_BIG_BODY_PCT}%")
-                if c2[5] <= avg_volume_candles:
-                    reasons.append("Big candle volume not above average")
                 if not (is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT):
                     reasons.append(f"Small candle 1 not bearish or body {body_pct(c1):.2f}% > {MAX_SMALL_BODY_PCT}%")
                 if not (is_bearish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT):
@@ -643,8 +583,6 @@ def process_symbol(symbol, alert_queue):
             elif is_bearish(c2) and not falling:
                 if body_pct(c2) < MIN_BIG_BODY_PCT:
                     reasons.append(f"Big candle body {body_pct(c2):.2f}% < {MIN_BIG_BODY_PCT}%")
-                if c2[5] <= avg_volume_candles:
-                    reasons.append("Big candle volume not above average")
                 if not (is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT):
                     reasons.append(f"Small candle 1 not bullish or body {body_pct(c1):.2f}% > {MAX_SMALL_BODY_PCT}%")
                 if not (is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT):
@@ -660,25 +598,13 @@ def process_symbol(symbol, alert_queue):
             'price_ema21': '✅' if (rising and entry > ema21) or (falling and entry < ema21) else '⚠️',
             'ema9_ema21': '✅' if (rising and ema9 > ema21) or (falling and ema9 < ema21) else '⚠️'
         }
-        category = (
-            'two_green' if ema_status['price_ema21'] == '✅' and ema_status['ema9_ema21'] == '✅' else
-            'one_green_one_caution' if ema_status['price_ema21'] == '✅' or ema_status['ema9_ema21'] == '✅' else
-            'two_cautions'
-        )
+        category = 'two_green' if ema_status['price_ema21'] == '✅' and ema_status['ema9_ema21'] == '✅' else None
+        if not category:
+            return
+
         rsi_category = 'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'
         adx_category = 'Strong Trend' if adx >= 25 else 'Weak Trend'
         big_candle_rsi_status = 'Overbought' if big_candle_rsi > 75 else 'Oversold' if big_candle_rsi < 25 else 'Normal'
-
-        zigzag_status = 'No Swing'
-        zigzag_price = ''
-        if swing_points:
-            last_swing = swing_points[-1]
-            if last_swing[2] == 'low' and rising:
-                zigzag_status = 'Swing Low'
-                zigzag_price = last_swing[1]
-            elif last_swing[2] == 'high' and falling:
-                zigzag_status = 'Swing High'
-                zigzag_price = last_swing[1]
 
         # Calculate candle components for pattern detection
         first_candle = candles[-3]
@@ -692,23 +618,26 @@ def process_symbol(symbol, alert_queue):
         lower_wick_pct_val = (lower_wick / total_range * 100) if total_range > 0 else 0
 
         # Pattern detection for first small candle with tick logic
-        def detect_candle_pattern(candle, is_bullish):
+        def detect_candle_pattern(candle, is_bullish, pattern_type):
             body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             first_tick = '✅'
-            if upper_wick_pct > 3 * lower_wick_pct or lower_wick_pct > 3 * upper_wick_pct or body_pct < 10:
-                first_tick = '❌'
             pressure = None
+
             if body_pct < 10:
-                if not is_bullish and upper_wick_pct > 2 * lower_wick_pct:
-                    pressure = "selling pressure"
-                elif not is_bullish and lower_wick_pct > 2 * upper_wick_pct:
-                    pressure = "buying pressure"
-                elif is_bullish and lower_wick_pct > 2 * upper_wick_pct:
-                    pressure = "buying pressure"
-                elif is_bullish and upper_wick_pct > 2 * lower_wick_pct:
-                    pressure = "selling pressure"
+                first_tick = '⚠️'
+            else:
+                if pattern_type == 'rising':
+                    if upper_wick_pct >= 2.5 * lower_wick_pct:
+                        first_tick = '❌'
+                    elif lower_wick_pct > 2.5 * upper_wick_pct:
+                        first_tick = '🟣'
+                elif pattern_type == 'falling':
+                    if lower_wick_pct >= 2.5 * upper_wick_pct:
+                        first_tick = '❌'
+                    elif upper_wick_pct > 2.5 * lower_wick_pct:
+                        first_tick = '🟣'
 
             if body_pct < 5 or body_pct == 0:
                 if is_bullish:
@@ -734,21 +663,21 @@ def process_symbol(symbol, alert_queue):
                     return "Dragonfly Doji", first_tick, pressure
             return "Doji", first_tick, pressure
 
-        pattern, first_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle))
+        pattern, first_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle), 'rising' if rising else 'falling')
 
         if rising:
             sent_signals[(symbol, 'rising')] = signal_time
-            tp = candles[-4][4]  # TP at big candle close
+            tp = candles[-4][4]
             sl = entry * (1 - SL_PCT)
             second_candle = candles[-2]
-            tp_touched = second_candle[2] >= tp  # High touches TP
+            tp_touched = second_candle[2] >= tp
             second_tick = '✅' if not tp_touched else '❌'
         else:
             sent_signals[(symbol, 'falling')] = signal_time
-            tp = candles[-4][4]  # TP at big candle close
+            tp = candles[-4][4]
             sl = entry * (1 + SL_PCT)
             second_candle = candles[-2]
-            tp_touched = second_candle[3] <= tp  # Low touches TP
+            tp_touched = second_candle[3] <= tp
             second_tick = '✅' if not tp_touched else '❌'
 
         trade = {
@@ -764,15 +693,12 @@ def process_symbol(symbol, alert_queue):
             'adx_category': adx_category,
             'big_candle_rsi': big_candle_rsi,
             'big_candle_rsi_status': big_candle_rsi_status,
-            'zigzag_status': zigzag_status,
-            'zigzag_price': zigzag_price,
             'signal_time': signal_entry_time,
             'signal_weekday': signal_weekday,
             'obv_trend': obv_trend,
             'macd_line': macd_line,
             'macd_signal': macd_signal,
             'macd_status': macd_status,
-            'avg_volume': avg_volume,
             'first_candle_pattern': pattern,
             'first_candle_lower_wick': lower_wick_pct_val,
             'first_candle_upper_wick': upper_wick_pct_val,
@@ -793,10 +719,8 @@ def process_symbol(symbol, alert_queue):
             f"RSI (14) - {rsi:.2f} ({rsi_category})\n"
             f"Big Candle RSI - {big_candle_rsi:.2f} ({big_candle_rsi_status})\n"
             f"ADX (14) - {adx:.2f} ({adx_category})\n"
-            f"Zig Zag - {zigzag_status}\n"
             f"OBV Trend - {obv_trend}\n"
             f"MACD - {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
-            f"Liquidity - {avg_volume:.0f} USDT\n"
             f"{pattern_msg}\n"
             f"2nd Small Candle Touched TP: {second_tick}\n"
             f"entry - {entry}\n"
