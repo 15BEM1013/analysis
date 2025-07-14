@@ -126,7 +126,7 @@ def load_closed_trades():
 def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
+    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
@@ -145,7 +145,7 @@ def send_telegram(msg, retries=3):
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
-    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
+    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
     try:
         response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         if response.get('ok'):
@@ -158,7 +158,7 @@ def edit_telegram_message(message_id, new_text):
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    proxies = {'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712', 'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'}
+    proxies = {'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742', 'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'}
     try:
         if not os.path.exists(filename):
             print(f"File {filename} does not exist")
@@ -185,8 +185,8 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'future'},
     'enableRateLimit': True,
     'proxies': {
-        'http': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712',
-        'https': 'http://mtklvbkt:hiw07erlr4rw@207.244.217.165:6712'
+        'http': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742',
+        'https': 'http://mtklvbkt:hiw07erl4rw@92.113.242.158:6742'
     }
 })
 app = Flask(__name__)
@@ -290,7 +290,8 @@ def calculate_adx(candles, period=14):
         low_diff = lows[i-1] - lows[i]
         plus_dm[i-1] = high_diff if high_diff > low_diff and high_diff > 0 else 0
         minus_dm[i-1] = low_diff if low_diff > 0 else 0
-        tr[i-1] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+        tr[i-1] = max(highs[i] - lows Excerpt of the rest of the code remains unchanged:
+[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
     atr = np.mean(tr[-period:])
     if atr == 0:
         return 0
