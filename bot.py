@@ -524,75 +524,330 @@ def check_tp_sl():
                             pnl = (trade['tp'] - trade['entry']) / trade['entry'] * 100
                             hit = "✅ TP hit"
                         elif last <= trade['sl']:
-                            pnl = (trade rosbags = []
-            for bag in baggage:
-                if bag['type'] == 'message':
-                    message = bag['message']
-                    chat_id = str(bag['chat_id'])
-                    send_message = partial(
-                        bot.send_message, chat_id=chat_id, parse_mode='HTML'
-                    )
-                    if message.reply_to_message:
-                        reply_to_message_id = message.reply_to_message.message_id
-                        send_message = partial(
-                            send_message, reply_to_message_id=reply_to_message_id
-                        )
-
-                    if '/start' in message.text.lower():
-                        send_message(
-                            "Welcome to the Trading Bot! I'll notify you about trading signals based on the Rising and Falling Three patterns."
-                        )
-                    elif '/help' in message.text.lower():
-                        send_message(
-                            "Available commands:\n"
-                            "/start - Start the bot\n"
-                            "/help - Show this help message\n"
-                            "/status - Get current bot status\n"
-                            "/trades - List open trades\n"
-                            "/closed - List recently closed trades\n"
-                            "/stats - Show trading statistics"
-                        )
-                    elif '/status' in message.text.lower():
-                        send_message(f"Bot is running. Open trades: {len(open_trades)}. Last scan: {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}")
-                    elif '/trades' in message.text.lower():
-                        if open_trades:
-                            msg = "Open Trades:\n" + "\n".join(
-                                f"{k}: {v['side']} @ {v['entry']}, TP: {v['tp']}, SL: {v['sl']}, Timeframe: {v['timeframe']}"
-                                for k, v in open_trades.items()
+                            pnl = (trade['sl'] - trade['entry']) / trade['entry'] * 100
+                            hit = "❌ SL hit"
+                    else:
+                        if last <= trade['tp']:
+                            pnl = (trade['entry'] - trade['tp']) / trade['entry'] * 100
+                            hit = "✅ TP hit"
+                        elif last >= trade['sl']:
+                            pnl = (trade['entry'] - trade['sl']) / trade['entry'] * 100
+                            hit = "❌ SL hit"
+                    if hit:
+                        profit = CAPITAL * pnl / 100
+                        closed_trade = {
+                            'symbol': symbol,
+                            'side': trade['side'],
+                            'entry': trade['entry'],
+                            'tp': trade['tp'],
+                            'sl': trade['sl'],
+                            'pnl': profit,
+                            'pnl_pct': pnl,
+                            'category': trade.get('category'),
+                            'ema_status': trade.get('ema_status', {}),
+                            'rsi': trade.get('rsi'),
+                            'rsi_category': trade.get('rsi_category'),
+                            'adx': trade.get('adx'),
+                            'adx_category': trade.get('adx_category'),
+                            'big_candle_rsi': trade.get('big_candle_rsi'),
+                            'big_candle_rsi_status': trade.get('big_candle_rsi_status'),
+                            'signal_time': trade.get('signal_time'),
+                            'signal_weekday': trade.get('signal_weekday'),
+                            'obv_trend': trade.get('obv_trend'),
+                            'macd_line': trade.get('macd_line'),
+                            'macd_signal': trade.get('macd_signal'),
+                            'macd_status': trade.get('macd_status'),
+                            'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S'),
+                            'first_candle_pattern': trade.get('first_candle_pattern'),
+                            'first_candle_lower_wick': trade.get('first_candle_lower_wick'),
+                            'first_candle_upper_wick': trade.get('first_candle_upper_wick'),
+                            'first_candle_body': trade.get('first_candle_body'),
+                            'first_candle_wick_tick': trade.get('first_candle_wick_tick'),
+                            'first_candle_body_tick': trade.get('first_candle_body_tick'),
+                            'second_candle_tp_touched': trade.get('second_candle_tp_touched'),
+                            'timeframe': trade['timeframe']
+                        }
+                        trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
+                        if not redis_client or not redis_client.sismember('exported_trades', trade_id):
+                            save_closed_trades(closed_trade)
+                            trades_to_remove.append(sym)
+                            ema_status = trade.get('ema_status', {})
+                            new_msg = (
+                                f"{symbol} ({trade['timeframe']}) - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                                f"Signal Time: {trade.get('signal_time', 'N/A')} ({trade.get('signal_weekday', 'N/A')})\n"
+                                f"EMA 21: {'✅' if ema_status.get('price_ema21') else '⚠️'}\n"
+                                f"EMA 9: {'✅' if ema_status.get('ema9_ema21') else '⚠️'}\n"
+                                f"RSI (14): {trade.get('rsi', 'N/A'):.2f} ({trade.get('rsi_category', 'N/A')})\n"
+                                f"Big Candle RSI: {trade.get('big_candle_rsi', 'N/A'):.2f} ({trade.get('big_candle_rsi_status', 'N/A')})\n"
+                                f"ADX (14): {trade.get('adx', 'N/A'):.2f} ({trade.get('adx_category', 'N/A')})\n"
+                                f"OBV Trend: {trade.get('obv_trend', 'N/A')}\n"
+                                f"MACD: {trade.get('macd_status', 'N/A')} (Line: {trade.get('macd_line', 'N/A'):.2f}, Signal: {trade.get('macd_signal', 'N/A'):.2f})\n"
+                                f"1st Candle: {trade.get('first_candle_pattern', 'N/A')}, Lower: {trade.get('first_candle_lower_wick', 'N/A'):.2f}%, "
+                                f"Upper: {trade.get('first_candle_upper_wick', 'N/A'):.2f}% {trade.get('first_candle_wick_tick', 'N/A')}\n"
+                                f"Body: {trade.get('first_candle_body', 'N/A'):.2f}% {trade.get('first_candle_body_tick', 'N/A')}\n"
+                                f"2nd Candle TP: {trade.get('second_candle_tp_touched', 'N/A')}\n"
+                                f"entry: {trade['entry']}\n"
+                                f"tp: {trade['tp']}\n"
+                                f"sl: {trade['sl']:.4f}\n"
+                                f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                             )
-                            send_message(msg)
+                            edit_telegram_message(trade.get('msg_id'), new_msg)
                         else:
-                            send_message("No open trades")
-                    elif '/closed' in message.text.lower():
-                        closed = load_closed_trades()[-5:]
-                        if closed:
-                            msg = "Recent Closed Trades:\n" + "\n".join(
-                                f"{t['symbol']}: {t['side']} @ {t['entry']}, PNL: {t['pnl']:.2f} ({t['pnl_pct']:.2f}%), Timeframe: {t['timeframe']}"
-                                for t in closed
-                            )
-                            send_message(msg)
-                        else:
-                            send_message("No closed trades")
-                    elif '/stats' in message.text.lower():
-                        closed = load_closed_trades()
-                        closed_df = pd.DataFrame(closed)
-                        total_trades = len(closed_df)
-                        win_trades = len(closed_df[closed_df['pnl'] > 0]) if not closed_df.empty else 0
-                        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
-                        total_pnl = closed_df['pnl'].sum() if not closed_df.empty else 0
-                        msg = (
-                            f"Stats:\n"
-                            f"Total Trades: {total_trades}\n"
-                            f"Win Rate: {win_rate:.2f}%\n"
-                            f"Total PNL: ${total_pnl:.2f}"
-                        )
-                        send_message(msg)
+                            logger.info(f"Trade {trade_id} already closed, skipping")
                 except Exception as e:
-                    logger.error(f"Error processing Telegram update: {e}")
-                    send_message(f"❌ Error: {e}")
+                    logger.error(f"TP/SL error for {sym}: {e}")
+                    batched_messages.append(f"❌ TP/SL error for {sym}: {e}")
+            for sym in trades_to_remove:
+                del open_trades[sym]
+            if trades_to_remove:
+                save_trades()
+                logger.info(f"Removed {len(trades_to_remove)} closed trades from open_trades")
+                send_telegram(f"Removed {len(trades_to_remove)} closed trades from open_trades")
+            if batched_messages:
+                send_telegram("\n".join(batched_messages[:5]))
+            time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
-            logger.error(f"Error in Telegram bot: {e}")
+            logger.error(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+            send_telegram(f"❌ TP/SL loop error: {e}")
+            time.sleep(5)
 
+# === EXPORT TO CSV ===
+def export_to_csv():
+    try:
+        all_closed = load_closed_trades()
+        closed_trades_df = pd.DataFrame(all_closed)
+        total_pnl = closed_trades_df['pnl'].sum() if not closed_trades_df.empty else 0.0
+        total_trades = len(closed_trades_df)
+        win_trades = len(closed_trades_df[closed_trades_df['pnl'] > 0]) if not closed_trades_df.empty else 0
+        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+        avg_win = closed_trades_df[closed_trades_df['pnl'] > 0]['pnl'].mean() if win_trades > 0 else 0.0
+        avg_loss = closed_trades_df[closed_trades_df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
+        win_rate_rising = closed_trades_df[closed_trades_df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'buy'].empty else 0.0
+        win_rate_falling = closed_trades_df[closed_trades_df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['side'] == 'sell'].empty else 0.0
+        win_rate_obv_up = closed_trades_df[closed_trades_df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['obv_trend'] == 'Up'].empty else 0.0
+        win_rate_macd_bullish = closed_trades_df[closed_trades_df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['macd_status'] == 'Bullish'].empty else 0.0
+        
+        if not closed_trades_df.empty:
+            exported_trades = set(redis_client.smembers('exported_trades') if redis_client else [])
+            closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time'] + ':' + closed_trades_df['entry'].astype(str) + ':' + closed_trades_df['pnl'].astype(str)
+            new_trades_df = closed_trades_df[~closed_trades_df['trade_id'].isin(exported_trades)]
+            if not new_trades_df.empty:
+                mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
+                header = not os.path.exists(CLOSED_TRADE_CSV)
+                new_trades_df.drop(columns=['trade_id']).to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
+                logger.info(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
+                send_csv_to_telegram(CLOSED_TRADE_CSV)
+                if redis_client:
+                    for trade_id in new_trades_df['trade_id']:
+                        redis_client.sadd('exported_trades', trade_id)
+            else:
+                logger.info("No new closed trades to export")
+        else:
+            logger.info("No closed trades to export")
+        summary_msg = (
+            f"🔍 Scan Completed at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Total Trades: {total_trades}\n"
+            f"Win Rate: {win_rate:.2f}% ({win_trades}/{total_trades})\n"
+            f"Total PnL: ${total_pnl:.2f} ({total_pnl / CAPITAL:.2f}%)\n"
+            f"Avg Win: ${avg_win:.2f}\n"
+            f"Avg Loss: ${avg_loss:.2f}\n"
+            f"Rising Three Win Rate: {win_rate_rising:.2f}%\n"
+            f"Falling Three Win Rate: {win_rate_falling:.2f}%\n"
+            f"OBV Up Win Rate: {win_rate_obv_up:.2f}%\n"
+            f"MACD Bullish Win Rate: {win_rate_macd_bullish:.2f}%\n"
+        )
+        send_telegram(summary_msg)
+    except Exception as e:
+        logger.error(f"Error in export_to_csv: {e}")
+        send_telegram(f"❌ Error in export_to_csv: {e}")
+
+# === PROCESS SYMBOL ===
+def process_symbol(symbol, timeframe, alert_queue):
+    try:
+        for attempt in range(3):
+            try:
+                candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
+                if len(candles) < 30:
+                    logger.info(f"{symbol} ({timeframe}): Skipped, insufficient candles ({len(candles)})")
+                    return
+                if attempt < 2 and candles[-1][0] > candles[-2][0]:
+                    break
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error fetching OHLCV for {symbol} ({timeframe}): {e}")
+                return
+
+        signal_time = candles[-2][0]
+        signal_entry_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
+        signal_weekday = get_ist_time().strftime('%A')
+        signal_key = (symbol, 'rising', timeframe) if detect_rising_three(candles) else (symbol, 'falling', timeframe)
+        if signal_key in sent_signals and sent_signals[signal_key] == signal_time:
+            return
+
+        ema21 = calculate_ema(candles, period=21)
+        ema9 = calculate_ema(candles, period=9)
+        rsi = calculate_rsi(candles, period=RSI_PERIOD)
+        adx = calculate_adx(candles, period=ADX_PERIOD)
+        big_candle_rsi = calculate_rsi(candles[:-3], period=14)
+        obv_trend = calculate_obv(candles)
+        macd_line, macd_signal, macd_status = calculate_macd(candles, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
+        if any(v is None for v in [ema21, ema9, rsi, adx, big_candle_rsi, macd_line]):
+            logger.info(f"{symbol} ({timeframe}): Skipped, indicator calculation failed")
+            return
+
+        rising = detect_rising_three(candles)
+        falling = detect_falling_three(candles)
+        if not (rising or falling):
+            c2, c1, c0 = candles[-4], candles[-3], candles[-2]
+            if DEBUG_MODE:
+                logger.debug(f"{symbol} ({timeframe}): Candle data - Big: O={c2[1]}, H={c2[2]}, L={c2[3]}, C={c2[4]}, V={c2[5]}; Small1: O={c1[1]}, H={c1[2]}, L={c1[3]}, C={c1[4]}, V={c1[5]}; Small0: O={c0[1]}, H={c0[2]}, L={c0[3]}, C={c0[4]}, V={c0[5]}")
+            return
+
+        entry = candles[-2][4]
+        ema_status = {
+            'price_ema21': '✅' if (rising and entry > ema21) or (falling and entry < ema21) else '⚠️',
+            'ema9_ema21': '✅' if (rising and ema9 > ema21) or (falling and ema9 < ema21) else '⚠️'
+        }
+        category = 'two_green_ema' if ema_status['price_ema21'] == '✅' and ema_status['ema9_ema21'] == '✅' else None
+        if not category:
+            return
+
+        rsi_category = 'Overbought' if rsi > 70 else 'Oversold' if rsi < 30 else 'Neutral'
+        adx_category = 'Strong Trend' if adx >= 25 else 'Weak Trend'
+        big_candle_rsi_status = 'Overbought' if big_candle_rsi > 75 else 'Oversold' if big_candle_rsi < 25 else 'Normal'
+
+        first_candle = candles[-3]
+        open_price, high, low, close = first_candle[1], first_candle[2], first_candle[3], first_candle[4]
+        body = abs(open_price - close)
+        upper_wick = high - max(open_price, close)
+        lower_wick = min(open_price, close) - low
+        total_range = high - low if high > low else 0.001
+        body_pct_val = (body / total_range * 100)
+        upper_wick_pct_val = (upper_wick / total_range * 100)
+        lower_wick_pct_val = (lower_wick / total_range * 100)
+
+        def detect_candle_pattern(candle, is_bullish, pattern_type):
+            candle_body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
+            upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
+            lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
+            wick_tick = '✅'
+            body_tick = '✅' if candle_body_pct >= 1 else '⚠️'
+            pressure = None
+
+            if pattern_type == 'rising':
+                if upper_wick_pct >= 2.5 * lower_wick_pct:
+                    wick_tick = '❌'
+                elif lower_wick_pct > 2.5 * upper_wick_pct:
+                    wick_tick = '🟡'
+            elif pattern_type == 'falling':
+                if lower_wick_pct >= 2.5 * upper_wick_pct:
+                    wick_tick = '❌'
+                elif upper_wick_pct > 2.5 * lower_wick_pct:
+                    wick_tick = '🟡'
+
+            if candle_body_pct < 1:
+                if is_bullish:
+                    if lower_wick_pct > 70 and upper_wick_pct < 1:
+                        return "Dragonfly Doji", wick_tick, body_tick, pressure
+                    elif upper_wick_pct > 70 and lower_wick_pct < 1:
+                        return "Gravestone Doji", wick_tick, body_tick, pressure
+                else:
+                    if upper_wick_pct > 70 and lower_wick_pct < 1:
+                        return "Gravestone Doji", wick_tick, body_tick, pressure
+                    elif lower_wick_pct > 70 and upper_wick_pct < 1:
+                        return "Dragonfly Doji", wick_tick, body_tick, pressure
+                return "Doji", wick_tick, body_tick, pressure
+            elif is_bullish:
+                if lower_wick_pct > 70 and upper_wick_pct < 1:
+                    return "Hammer", wick_tick, body_tick, pressure
+                elif upper_wick_pct > 70 and lower_wick_pct < 1:
+                    return "Hanging Man", wick_tick, body_tick, pressure
+            else:
+                if upper_wick_pct > 70 and lower_wick_pct < 1:
+                    return "Shooting Star", wick_tick, body_tick, pressure
+                elif lower_wick_pct > 70 and upper_wick_pct < 1:
+                    return "Inverted Hammer", wick_tick, body_tick, pressure
+            return "Standard", wick_tick, body_tick, pressure
+
+        pattern, wick_tick, body_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle), 'rising' if rising else 'falling')
+
+        if rising:
+            sent_signals[(symbol, 'rising', timeframe)] = signal_time
+            tp = candles[-4][4]
+            sl = entry * (1 - SL_PCT)
+            second_candle = candles[-2]
+            tp_touched = second_candle[2] >= tp
+            second_tick = '✅' if tp_touched else '❌'
+        else:
+            sent_signals[(symbol, 'falling', timeframe)] = signal_time
+            tp = candles[-4][4]
+            sl = entry * (1 + SL_PCT)
+            second_candle = candles[-2]
+            tp_touched = second_candle[3] <= tp
+            second_tick = '✅' if tp_touched else '❌'
+
+        trade = {
+            'side': 'buy' if rising else 'sell',
+            'entry': entry,
+            'symbol': symbol,
+            'tp': tp,
+            'sl': sl,
+            'timeframe': timeframe,
+            'category': category,
+            'ema_status': ema_status,
+            'rsi': rsi,
+            'rsi_category': rsi_category,
+            'adx': adx,
+            'adx_category': adx_category,
+            'big_candle_rsi': big_candle_rsi,
+            'big_candle_rsi_status': big_candle_rsi_status,
+            'signal_time': signal_entry_time,
+            'signal_weekday': signal_weekday,
+            'obv_trend': obv_trend,
+            'macd_line': macd_line,
+            'macd_signal': macd_signal,
+            'macd_status': macd_status,
+            'first_candle_pattern': pattern,
+            'first_candle_lower_wick': lower_wick_pct_val,
+            'first_candle_upper_wick': upper_wick_pct_val,
+            'first_candle_body': body_pct_val,
+            'first_candle_wick_tick': wick_tick,
+            'first_candle_body_tick': body_tick,
+            'second_candle_tp_touched': second_tick
+        }
+
+        pattern_msg = (
+            f"1st Candle: {pattern}, Lower: {lower_wick_pct_val:.2f}%, Upper: {upper_wick_pct_val:.2f}% {wick_tick}\n"
+            f"Body: {body_pct_val:.2f}% {body_tick}"
+        )
+        if pressure and wick_tick == '✅':
+            pattern_msg += f" ({pressure})"
+
+        msg = (
+            f"{symbol} ({timeframe}) - {'RISING' if rising else 'FALLING'} PATTERN\n"
+            f"Signal Time: {signal_entry_time} ({signal_weekday})\n"
+            f"EMA 21: {ema_status['price_ema21']}\n"
+            f"EMA 9: {ema_status['ema9_ema21']}\n"
+            f"RSI (14): {rsi:.2f} ({rsi_category})\n"
+            f"Big Candle RSI: {big_candle_rsi:.2f} ({big_candle_rsi_status})\n"
+            f"ADX: {adx:.2f} ({adx_category})\n"
+            f"OBV Trend: {obv_trend}\n"
+            f"MACD: {macd_status} (Line: {macd_line:.2f}, Signal: {macd_signal:.2f})\n"
+            f"{pattern_msg}\n"
+            f"2nd Candle TP: {second_tick}\n"
+            f"entry: {entry:.2f}\n"
+            f"tp: {tp:.2f}\n"
+            f"sl: {sl:.4f}"
+        )
+        trade['msg_id'] = send_telegram(msg)
+        open_trades[f"{symbol}:{timeframe}"] = trade
+        save_trades()
+        alert_queue.put((symbol, trade))
+    except Exception as e:
+        logger.error(f"Error processing {symbol} ({timeframe}): {e}")
+        send_telegram(f"❌ Error processing {symbol} ({timeframe}): {e}")
+
+# === MAIN LOOP ===
 def run_bot():
     try:
         if not init_redis():
