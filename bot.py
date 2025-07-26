@@ -5,7 +5,6 @@ import ccxt
 import time
 import threading
 import requests
-from flask import Flask, send_file, jsonify
 import glob
 from datetime import datetime
 import pytz
@@ -14,12 +13,13 @@ import math
 import queue
 import pandas as pd
 import numpy as np
+import logging
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
 CHAT_ID = os.getenv('CHAT_ID', '655537138')
 REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
-REDIS_PORT = os.getenv('REDIS_PORT', 6379)
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
 TIMEFRAMES = ['30m', '1h']
 MIN_BIG_BODY_PCT = 1.0
@@ -29,22 +29,35 @@ MAX_WORKERS = 10
 BATCH_DELAY = 2.5
 CAPITAL = 10.0
 SL_PCT = 1.5 / 100
-TP_SL_CHECK_INTERVAL = 30
+TP_SL_CHECK_INTERVAL = 60  # Increased to reduce Telegram spam
 CLOSED_TRADE_CSV = '/tmp/closed_trades.csv'
 RSI_PERIOD = 14
 ADX_PERIOD = 14
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
+TELEGRAM_ERROR_COOLDOWN = 300  # 5 minutes cooldown for error messages
+LOCAL_STORAGE_FILE = '/tmp/trades.json'  # Fallback storage
+
+# === LOGGING ===
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # === Redis Client ===
-redis_client = redis.Redis(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    password=REDIS_PASSWORD,
-    decode_responses=True,
-    ssl=True
-)
+redis_client = None
+try:
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+        ssl=True
+    )
+    redis_client.ping()
+    logger.info("Connected to Redis")
+except Exception as e:
+    logger.error(f"Redis connection failed: {e}. Falling back to local storage.")
+    redis_client = None
 
 # === TIME ZONE HELPER ===
 def get_ist_time():
@@ -54,109 +67,170 @@ def get_ist_time():
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
-        redis_client.set('open_trades', json.dumps(open_trades, default=str))
-        print("Trades saved to Redis")
-        send_telegram("✅ Trades saved to Redis")
+        valid_trades = {
+            key: trade for key, trade in open_trades.items()
+            if all(k in trade for k in ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']) and
+            trade['timeframe'] in TIMEFRAMES
+        }
+        if len(valid_trades) < len(open_trades):
+            logger.warning(f"Removed {len(open_trades) - len(valid_trades)} invalid trades before saving")
+        if redis_client:
+            redis_client.set('open_trades', json.dumps(valid_trades, default=str))
+            logger.info("Trades saved to Redis")
+            send_telegram("✅ Trades saved to Redis")
+        else:
+            with open(LOCAL_STORAGE_FILE, 'w') as f:
+                json.dump(valid_trades, f, default=str)
+            logger.info("Trades saved to local storage")
     except Exception as e:
-        print(f"Error saving trades to Redis: {e}")
-        send_telegram(f"❌ Error saving trades to Redis: {e}")
+        logger.error(f"Error saving trades: {e}")
+        send_telegram(f"❌ Error saving trades: {e}")
 
 def load_trades():
     global open_trades
     try:
-        data = redis_client.get('open_trades')
-        if data:
-            open_trades = json.loads(data)
-            print(f"Loaded {len(open_trades)} trades from Redis")
+        if redis_client:
+            data = redis_client.get('open_trades')
+            if data:
+                loaded_trades = json.loads(data)
+                open_trades = {
+                    key: trade for key, trade in loaded_trades.items()
+                    if isinstance(trade, dict) and
+                    all(k in trade for k in ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']) and
+                    trade['timeframe'] in TIMEFRAMES
+                }
+                if len(open_trades) < len(loaded_trades):
+                    logger.warning(f"Removed {len(loaded_trades) - len(open_trades)} invalid trades during load")
+                    save_trades()  # Save cleaned trades
+                logger.info(f"Loaded {len(open_trades)} valid trades from Redis")
+            else:
+                open_trades = {}
         else:
-            open_trades = {}
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON from Redis: {e}")
-        open_trades = {}
+            if os.path.exists(LOCAL_STORAGE_FILE):
+                with open(LOCAL_STORAGE_FILE, 'r') as f:
+                    loaded_trades = json.load(f)
+                    open_trades = {
+                        key: trade for key, trade in loaded_trades.items()
+                        if isinstance(trade, dict) and
+                        all(k in trade for k in ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']) and
+                        trade['timeframe'] in TIMEFRAMES
+                    }
+                    logger.info(f"Loaded {len(open_trades)} valid trades from local storage")
+            else:
+                open_trades = {}
     except Exception as e:
-        print(f"Error loading trades from Redis: {e}")
+        logger.error(f"Error loading trades: {e}")
+        send_telegram(f"❌ Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = load_closed_trades()
         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
-        if redis_client.sismember('exported_trades', trade_id):
-            print(f"Trade {trade_id} already closed, skipping")
+        if redis_client and redis_client.sismember('exported_trades', trade_id):
+            logger.info(f"Trade {trade_id} already closed, skipping")
             return
         all_closed_trades.append(closed_trade)
-        redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
-        redis_client.sadd('exported_trades', trade_id)
-        print(f"Closed trade saved to Redis: {trade_id}")
-        send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
+        if redis_client:
+            redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
+            redis_client.sadd('exported_trades', trade_id)
+            logger.info(f"Closed trade saved to Redis: {trade_id}")
+            send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
+        else:
+            with open(CLOSED_TRADE_CSV, 'a') as f:
+                pd.DataFrame([closed_trade]).to_csv(f, index=False, header=not os.path.exists(CLOSED_TRADE_CSV))
+            logger.info(f"Closed trade saved to CSV: {trade_id}")
     except Exception as e:
-        print(f"Error saving closed trades to Redis: {e}")
-        send_telegram(f"❌ Error saving closed trades to Redis: {e}")
+        logger.error(f"Error saving closed trades: {e}")
+        send_telegram(f"❌ Error saving closed trades: {e}")
 
 def load_closed_trades():
     try:
-        data = redis_client.get('closed_trades')
-        if data:
-            trades = json.loads(data)
-            unique_trades = []
-            seen_ids = set()
-            for trade in trades:
-                trade_id = f"{trade['symbol']}:{trade['close_time']}:{trade['entry']}:{trade['pnl']}"
-                if trade_id not in seen_ids:
-                    unique_trades.append(trade)
-                    seen_ids.add(trade_id)
-            if len(trades) != len(unique_trades):
-                print(f"Removed {len(trades) - len(unique_trades)} duplicate closed trades from Redis")
-                redis_client.set('closed_trades', json.dumps(unique_trades, default=str))
-            return unique_trades
-        return []
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON from Redis: {e}")
+        if redis_client:
+            data = redis_client.get('closed_trades')
+            if data:
+                trades = json.loads(data)
+                unique_trades = []
+                seen_ids = set()
+                for trade in trades:
+                    trade_id = f"{trade['symbol']}:{trade['close_time']}:{trade['entry']}:{trade['pnl']}"
+                    if trade_id not in seen_ids:
+                        unique_trades.append(trade)
+                        seen_ids.add(trade_id)
+                if len(trades) != len(unique_trades):
+                    logger.warning(f"Removed {len(trades) - len(unique_trades)} duplicate closed trades from Redis")
+                    redis_client.set('closed_trades', json.dumps(unique_trades, default=str))
+                return unique_trades
+        else:
+            if os.path.exists(CLOSED_TRADE_CSV):
+                return pd.read_csv(CLOSED_TRADE_CSV).to_dict('records')
         return []
     except Exception as e:
-        print(f"Error loading closed trades from Redis: {e}")
+        logger.error(f"Error loading closed trades: {e}")
         return []
 
 # === TELEGRAM ===
+last_error_time = 0
 def send_telegram(msg, retries=3):
+    global last_error_time
+    current_time = time.time()
+    if "❌" in msg and current_time - last_error_time < TELEGRAM_ERROR_COOLDOWN:
+        logger.info(f"Suppressed Telegram error: {msg[:50]}...")
+        return None
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
+    proxies = {
+        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
+        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+    }
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
             if response.get('ok'):
-                print(f"Telegram sent: {msg[:50]}...")
+                logger.info(f"Telegram sent: {msg[:50]}...")
+                if "❌" in msg:
+                    last_error_time = current_time
                 return response.get('result', {}).get('message_id')
             else:
-                print(f"Telegram API error: {response.get('description')}")
+                if response.get('error_code') == 401:
+                    logger.error(f"Telegram Unauthorized error: {response.get('description')}. Check BOT_TOKEN and CHAT_ID.")
+                    return None
+                logger.warning(f"Telegram API error: {response.get('description')}")
         except Exception as e:
-            print(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
+            logger.warning(f"Telegram error (attempt {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
-    send_telegram(f"❌ Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
+    logger.error(f"Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
     return None
 
 def edit_telegram_message(message_id, new_text):
+    if not message_id:
+        return send_telegram(new_text)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
-    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
+    proxies = {
+        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
+        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+    }
     try:
         response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         if response.get('ok'):
-            print(f"Telegram updated: {new_text[:50]}...")
+            logger.info(f"Telegram updated: {new_text[:50]}...")
         else:
-            print(f"Telegram edit error: {response.get('description')}")
+            logger.warning(f"Telegram edit error: {response.get('description')}")
     except Exception as e:
-        print(f"Edit error: {e}")
+        logger.error(f"Edit error: {e}")
         send_telegram(f"❌ Telegram edit error: {e}")
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
+    proxies = {
+        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
+        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+    }
     try:
         if not os.path.exists(filename):
-            print(f"File {filename} does not exist")
+            logger.error(f"File {filename} does not exist")
             send_telegram(f"❌ File {filename} does not exist")
             return
         with open(filename, 'rb') as f:
@@ -164,13 +238,13 @@ def send_csv_to_telegram(filename):
             files = {'document': f}
             response = requests.post(url, data=data, files=files, proxies=proxies, timeout=10).json()
             if response.get('ok'):
-                print(f"Sent {filename} to Telegram")
+                logger.info(f"Sent {filename} to Telegram")
                 send_telegram(f"📎 Sent {filename} to Telegram")
             else:
-                print(f"Telegram send CSV error: {response.get('description')}")
+                logger.warning(f"Telegram send CSV error: {response.get('description')}")
                 send_telegram(f"❌ Telegram send CSV error: {response.get('description')}")
     except Exception as e:
-        print(f"Error sending {filename} to Telegram: {e}")
+        logger.error(f"Error sending {filename} to Telegram: {e}")
         send_telegram(f"❌ Error sending {filename} to Telegram: {e}")
 
 # === INIT ===
@@ -184,68 +258,10 @@ exchange = ccxt.binance({
         'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
     }
 })
-app = Flask(__name__)
 
 sent_signals = {}
 open_trades = {}
 closed_trades = []
-
-# === FLASK ENDPOINTS ===
-@app.route('/')
-def index():
-    return "✅ Rising & Falling Three Pattern Bot is Live!"
-
-@app.route('/list_files')
-def list_files():
-    try:
-        files = glob.glob('/tmp/*.csv')
-        if not files:
-            return "No CSV files found", 404
-        file_list = "<br>".join([os.path.basename(f) for f in files])
-        return f"Available CSV files:<br>{file_list}"
-    except Exception as e:
-        return f"Error listing files: {str(e)}", 500
-
-@app.route('/download/<filename>')
-def download_file(filename):
-    try:
-        file_path = os.path.join('/tmp', filename)
-        if not os.path.exists(file_path):
-            return f"File {filename} not found", 404
-        return send_file(file_path, as_attachment=True)
-    except Exception as e:
-        return f"Error downloading file: {str(e)}", 500
-
-@app.route('/stats')
-def stats():
-    try:
-        closed_trades = load_closed_trades()
-        df = pd.DataFrame(closed_trades)
-        if df.empty:
-            return jsonify({"error": "No closed trades available"}), 404
-        total_trades = len(df)
-        win_trades = len(df[df['pnl'] > 0])
-        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
-        avg_win = df[df['pnl'] > 0]['pnl'].mean() if win_trades > 0 else 0.0
-        avg_loss = df[df['pnl'] <= 0]['pnl'].mean() if (total_trades - win_trades) > 0 else 0.0
-        win_rate_rising = df[df['side'] == 'buy']['pnl'].gt(0).mean() * 100 if not df[df['side'] == 'buy'].empty else 0.0
-        win_rate_falling = df[df['side'] == 'sell']['pnl'].gt(0).mean() * 100 if not df[df['side'] == 'sell'].empty else 0.0
-        win_rate_obv_up = df[df['obv_trend'] == 'Up']['pnl'].gt(0).mean() * 100 if not df[df['obv_trend'] == 'Up'].empty else 0.0
-        win_rate_macd_bullish = df[df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not df[df['macd_status'] == 'Bullish'].empty else 0.0
-        stats = {
-            "total_trades": total_trades,
-            "win_trades": win_trades,
-            "win_rate": round(win_rate, 2),
-            "avg_win": round(avg_win, 2),
-            "avg_loss": round(avg_loss, 2),
-            "win_rate_rising": round(win_rate_rising, 2),
-            "win_rate_falling": round(win_rate_falling, 2),
-            "win_rate_obv_up": round(win_rate_obv_up, 2),
-            "win_rate_macd_bullish": round(win_rate_macd_bullish, 2)
-        }
-        return jsonify(stats)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
@@ -362,18 +378,23 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    markets = exchange.load_markets()
-    symbols = [
-        s for s in markets
-        if s.endswith('USDT') and
-           markets[s]['contract'] and
-           markets[s].get('active') and
-           markets[s].get('info', {}).get('status') == 'TRADING' and
-           len(s.split('/')[0]) <= 10
-    ]
-    print(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
-    send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
-    return symbols
+    try:
+        markets = exchange.load_markets()
+        symbols = [
+            s for s in markets
+            if s.endswith('USDT') and
+               markets[s]['contract'] and
+               markets[s].get('active') and
+               markets[s].get('info', {}).get('status') == 'TRADING' and
+               len(s.split('/')[0]) <= 10
+        ]
+        logger.info(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+        send_telegram(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
+        return symbols
+    except Exception as e:
+        logger.error(f"Error fetching symbols: {e}")
+        send_telegram(f"❌ Error fetching symbols: {e}")
+        return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close(timeframe):
@@ -397,9 +418,21 @@ def check_tp_sl():
     while True:
         try:
             trades_to_remove = []
+            batched_messages = []
             for sym, trade in list(open_trades.items()):
                 try:
-                    ticker = exchange.fetch_ticker(sym.split(':')[0])  # Extract symbol from symbol:timeframe key
+                    # Validate trade data
+                    if not all(k in trade for k in ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']):
+                        logger.warning(f"Invalid trade detected for {sym}: missing required keys")
+                        trades_to_remove.append(sym)
+                        continue
+                    if trade['timeframe'] not in TIMEFRAMES:
+                        logger.warning(f"Invalid trade detected for {sym}: invalid timeframe {trade['timeframe']}")
+                        trades_to_remove.append(sym)
+                        continue
+
+                    symbol = sym.split(':')[0]
+                    ticker = exchange.fetch_ticker(symbol)
                     last = ticker['last']
                     pnl = 0
                     hit = ""
@@ -420,76 +453,78 @@ def check_tp_sl():
                     if hit:
                         profit = CAPITAL * pnl / 100
                         closed_trade = {
-                            'symbol': sym,
+                            'symbol': symbol,
                             'side': trade['side'],
                             'entry': trade['entry'],
                             'tp': trade['tp'],
                             'sl': trade['sl'],
                             'pnl': profit,
                             'pnl_pct': pnl,
-                            'category': trade['category'],
-                            'ema_status': trade['ema_status'],
-                            'rsi': trade['rsi'],
-                            'rsi_category': trade['rsi_category'],
-                            'adx': trade['adx'],
-                            'adx_category': trade['adx_category'],
-                            'big_candle_rsi': trade['big_candle_rsi'],
-                            'big_candle_rsi_status': trade['big_candle_rsi_status'],
-                            'signal_time': trade['signal_time'],
-                            'signal_weekday': trade['signal_weekday'],
-                            'obv_trend': trade['obv_trend'],
-                            'macd_line': trade['macd_line'],
-                            'macd_signal': trade['macd_signal'],
-                            'macd_status': trade['macd_status'],
+                            'category': trade.get('category'),
+                            'ema_status': trade.get('ema_status', {}),
+                            'rsi': trade.get('rsi'),
+                            'rsi_category': trade.get('rsi_category'),
+                            'adx': trade.get('adx'),
+                            'adx_category': trade.get('adx_category'),
+                            'big_candle_rsi': trade.get('big_candle_rsi'),
+                            'big_candle_rsi_status': trade.get('big_candle_rsi_status'),
+                            'signal_time': trade.get('signal_time'),
+                            'signal_weekday': trade.get('signal_weekday'),
+                            'obv_trend': trade.get('obv_trend'),
+                            'macd_line': trade.get('macd_line'),
+                            'macd_signal': trade.get('macd_signal'),
+                            'macd_status': trade.get('macd_status'),
                             'close_time': get_ist_time().strftime('%Y-%m-%d %H:%M:%S'),
-                            'first_candle_pattern': trade['first_candle_pattern'],
-                            'first_candle_lower_wick': trade['first_candle_lower_wick'],
-                            'first_candle_upper_wick': trade['first_candle_upper_wick'],
-                            'first_candle_body': trade['first_candle_body'],
-                            'first_candle_wick_tick': trade['first_candle_wick_tick'],
-                            'first_candle_body_tick': trade['first_candle_body_tick'],
-                            'second_candle_tp_touched': trade['second_candle_tp_touched'],
+                            'first_candle_pattern': trade.get('first_candle_pattern'),
+                            'first_candle_lower_wick': trade.get('first_candle_lower_wick'),
+                            'first_candle_upper_wick': trade.get('first_candle_upper_wick'),
+                            'first_candle_body': trade.get('first_candle_body'),
+                            'first_candle_wick_tick': trade.get('first_candle_wick_tick'),
+                            'first_candle_body_tick': trade.get('first_candle_body_tick'),
+                            'second_candle_tp_touched': trade.get('second_candle_tp_touched'),
                             'timeframe': trade['timeframe']
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
-                        if not redis_client.sismember('exported_trades', trade_id):
+                        if not redis_client or not redis_client.sismember('exported_trades', trade_id):
                             save_closed_trades(closed_trade)
                             trades_to_remove.append(sym)
-                            ema_status = trade['ema_status']
+                            ema_status = trade.get('ema_status', {})
                             new_msg = (
-                                f"{sym} ({trade['timeframe']}) - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                                f"Signal Time: {trade['signal_time']} ({trade['signal_weekday']})\n"
-                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
-                                f"RSI (14) - {trade['rsi']:.2f} ({trade['rsi_category']})\n"
-                                f"Big Candle RSI - {trade['big_candle_rsi']:.2f} ({trade['big_candle_rsi_status']})\n"
-                                f"ADX (14) - {trade['adx']:.2f} ({trade['adx_category']})\n"
-                                f"OBV Trend - {trade['obv_trend']}\n"
-                                f"MACD - {trade['macd_status']} (Line: {trade['macd_line']:.2f}, Signal: {trade['macd_signal']:.2f})\n"
-                                f"1st Small Candle: {trade['first_candle_pattern']}, Lower: {trade['first_candle_lower_wick']:.2f}%, "
-                                f"Upper: {trade['first_candle_upper_wick']:.2f}% {trade['first_candle_wick_tick']}\n"
-                                f"Body: {trade['first_candle_body']:.2f}% {trade['first_candle_body_tick']}\n"
-                                f"2nd Small Candle Touched TP: {trade['second_candle_tp_touched']}\n"
+                                f"{symbol} ({trade['timeframe']}) - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                                f"Signal Time: {trade.get('signal_time', 'N/A')} ({trade.get('signal_weekday', 'N/A')})\n"
+                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status.get('price_ema21', 'N/A')}\n"
+                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status.get('ema9_ema21', 'N/A')}\n"
+                                f"RSI (14) - {trade.get('rsi', 'N/A'):.2f} ({trade.get('rsi_category', 'N/A')})\n"
+                                f"Big Candle RSI - {trade.get('big_candle_rsi', 'N/A'):.2f} ({trade.get('big_candle_rsi_status', 'N/A')})\n"
+                                f"ADX (14) - {trade.get('adx', 'N/A'):.2f} ({trade.get('adx_category', 'N/A')})\n"
+                                f"OBV Trend - {trade.get('obv_trend', 'N/A')}\n"
+                                f"MACD - {trade.get('macd_status', 'N/A')} (Line: {trade.get('macd_line', 'N/A'):.2f}, Signal: {trade.get('macd_signal', 'N/A'):.2f})\n"
+                                f"1st Small Candle: {trade.get('first_candle_pattern', 'N/A')}, Lower: {trade.get('first_candle_lower_wick', 'N/A'):.2f}%, "
+                                f"Upper: {trade.get('first_candle_upper_wick', 'N/A'):.2f}% {trade.get('first_candle_wick_tick', 'N/A')}\n"
+                                f"Body: {trade.get('first_candle_body', 'N/A'):.2f}% {trade.get('first_candle_body_tick', 'N/A')}\n"
+                                f"2nd Small Candle Touched TP: {trade.get('second_candle_tp_touched', 'N/A')}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
                                 f"sl - {trade['sl']:.4f}\n"
                                 f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                             )
-                            edit_telegram_message(trade['msg_id'], new_msg)
+                            edit_telegram_message(trade.get('msg_id'), new_msg)
                         else:
-                            print(f"Trade {trade_id} already closed, skipping TP/SL")
+                            logger.info(f"Trade {trade_id} already closed, skipping TP/SL")
                 except Exception as e:
-                    print(f"TP/SL check error on {sym}: {e}")
-                    send_telegram(f"❌ TP/SL check error on {sym}: {e}")
+                    logger.error(f"TP/SL check error on {sym}: {e}")
+                    batched_messages.append(f"❌ TP/SL check error on {sym}: {e}")
             for sym in trades_to_remove:
                 del open_trades[sym]
             if trades_to_remove:
                 save_trades()
-                print(f"Removed {len(trades_to_remove)} closed trades from open_trades")
+                logger.info(f"Removed {len(trades_to_remove)} closed trades from open_trades")
                 send_telegram(f"Removed {len(trades_to_remove)} closed trades from open_trades")
+            if batched_messages:
+                send_telegram("\n".join(batched_messages[:5]))  # Limit to 5 errors per batch
             time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
-            print(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+            logger.error(f"TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
             send_telegram(f"❌ TP/SL loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
             time.sleep(5)
 
@@ -510,23 +545,24 @@ def export_to_csv():
         win_rate_macd_bullish = closed_trades_df[closed_trades_df['macd_status'] == 'Bullish']['pnl'].gt(0).mean() * 100 if not closed_trades_df[closed_trades_df['macd_status'] == 'Bullish'].empty else 0.0
         
         if not closed_trades_df.empty:
-            exported_trades = redis_client.smembers('exported_trades') or set()
+            exported_trades = set(redis_client.smembers('exported_trades') if redis_client else [])
             closed_trades_df['trade_id'] = closed_trades_df['symbol'] + ':' + closed_trades_df['close_time'] + ':' + closed_trades_df['entry'].astype(str) + ':' + closed_trades_df['pnl'].astype(str)
             new_trades_df = closed_trades_df[~closed_trades_df['trade_id'].isin(exported_trades)]
             if not new_trades_df.empty:
                 mode = 'a' if os.path.exists(CLOSED_TRADE_CSV) else 'w'
                 header = not os.path.exists(CLOSED_TRADE_CSV)
                 new_trades_df.drop(columns=['trade_id']).to_csv(CLOSED_TRADE_CSV, mode=mode, header=header, index=False)
-                print(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
+                logger.info(f"Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
                 send_telegram(f"📊 Appended {len(new_trades_df)} new closed trades to {CLOSED_TRADE_CSV}")
                 send_csv_to_telegram(CLOSED_TRADE_CSV)
-                for trade_id in new_trades_df['trade_id']:
-                    redis_client.sadd('exported_trades', trade_id)
+                if redis_client:
+                    for trade_id in new_trades_df['trade_id']:
+                        redis_client.sadd('exported_trades', trade_id)
             else:
-                print("No new closed trades to export")
+                logger.info("No new closed trades to export")
                 send_telegram("📊 No new closed trades to export")
         else:
-            print("No closed trades to export")
+            logger.info("No closed trades to export")
             send_telegram("📊 No closed trades to export")
         summary_msg = (
             f"🔍 Scan Completed at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -542,7 +578,7 @@ def export_to_csv():
         )
         send_telegram(summary_msg)
     except Exception as e:
-        print(f"Error in export_to_csv: {e}")
+        logger.error(f"Error in export_to_csv: {e}")
         send_telegram(f"❌ Error in export_to_csv: {e}")
 
 # === PROCESS SYMBOL ===
@@ -551,7 +587,7 @@ def process_symbol(symbol, timeframe, alert_queue):
         for attempt in range(3):
             candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
             if len(candles) < 30:
-                print(f"{symbol} ({timeframe}): Skipped, insufficient candles ({len(candles)})")
+                logger.info(f"{symbol} ({timeframe}): Skipped, insufficient candles ({len(candles)})")
                 return
             if attempt < 2 and candles[-1][0] > candles[-2][0]:
                 break
@@ -572,7 +608,7 @@ def process_symbol(symbol, timeframe, alert_queue):
         obv_trend = calculate_obv(candles)
         macd_line, macd_signal, macd_status = calculate_macd(candles, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
         if any(v is None for v in [ema21, ema9, rsi, adx, big_candle_rsi, macd_line]):
-            print(f"{symbol} ({timeframe}): Skipped, indicator calculation failed")
+            logger.info(f"{symbol} ({timeframe}): Skipped, indicator calculation failed")
             return
 
         rising = detect_rising_three(candles)
@@ -599,7 +635,7 @@ def process_symbol(symbol, timeframe, alert_queue):
                 if c1[5] <= c0[5]:
                     reasons.append("Volume not decreasing")
             if reasons:
-                print(f"{symbol} ({timeframe}): No pattern detected. Reasons: {', '.join(reasons)}")
+                logger.info(f"{symbol} ({timeframe}): No pattern detected. Reasons: {', '.join(reasons)}")
             return
 
         entry = candles[-2][4]
@@ -615,7 +651,6 @@ def process_symbol(symbol, timeframe, alert_queue):
         adx_category = 'Strong Trend' if adx >= 25 else 'Weak Trend'
         big_candle_rsi_status = 'Overbought' if big_candle_rsi > 75 else 'Oversold' if big_candle_rsi < 25 else 'Normal'
 
-        # Calculate candle components for pattern detection
         first_candle = candles[-3]
         open_price, high, low, close = first_candle[1], first_candle[2], first_candle[3], first_candle[4]
         body = abs(open_price - close)
@@ -626,7 +661,6 @@ def process_symbol(symbol, timeframe, alert_queue):
         upper_wick_pct_val = (upper_wick / total_range * 100) if total_range > 0 else 0
         lower_wick_pct_val = (lower_wick / total_range * 100) if total_range > 0 else 0
 
-        # Pattern detection for first small candle with tick logic
         def detect_candle_pattern(candle, is_bullish, pattern_type):
             body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
             upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) > 0 else 0
@@ -744,22 +778,25 @@ def process_symbol(symbol, timeframe, alert_queue):
         save_trades()
         alert_queue.put((symbol, trade))
     except Exception as e:
-        print(f"Error processing {symbol} ({timeframe}): {e}")
+        logger.error(f"Error processing {symbol} ({timeframe}): {e}")
         send_telegram(f"❌ Error processing {symbol} ({timeframe}): {e}")
 
 # === MAIN LOOP ===
 def run_bot():
     try:
-        test_redis()
         load_trades()
         alert_queue = queue.Queue()
         threading.Thread(target=check_tp_sl, daemon=True).start()
         while True:
             symbols = get_symbols()
+            if not symbols:
+                logger.error("No symbols fetched, retrying in 60 seconds")
+                time.sleep(60)
+                continue
             chunk_size = math.ceil(len(symbols) / MAX_WORKERS)
             chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
             for timeframe in TIMEFRAMES:
-                print(f"Scanning for timeframe: {timeframe}")
+                logger.info(f"Scanning for timeframe: {timeframe}")
                 send_telegram(f"Starting scan for timeframe: {timeframe}")
                 for chunk in chunks:
                     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -768,29 +805,18 @@ def run_bot():
                             future.result()
                     time.sleep(BATCH_DELAY)
                 export_to_csv()
-                print(f"Number of open trades after {timeframe} scan: {len(open_trades)}")
+                logger.info(f"Number of open trades after {timeframe} scan: {len(open_trades)}")
                 send_telegram(f"Number of open trades after {timeframe} scan: {len(open_trades)}")
-            # Wait for the next candle close of the shortest timeframe (30m)
             sleep_time = min([get_next_candle_close(tf) for tf in TIMEFRAMES]) - time.time()
             if sleep_time > 0:
                 time.sleep(sleep_time)
     except Exception as e:
-        print(f"Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
+        logger.error(f"Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
         send_telegram(f"❌ Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
         time.sleep(5)
 
 # === START ===
-def test_redis():
-    try:
-        redis_client.ping()
-        print("✅ Redis connection successful")
-        send_telegram("✅ Redis connection successful")
-    except Exception as e:
-        print(f"Redis connection failed: {e}")
-        send_telegram(f"❌ Redis connection failed: {e}")
-
 if __name__ == "__main__":
-    test_redis()
-    load_trades()
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
+    logger.info("Starting bot...")
+    send_telegram("✅ Bot started")
+    run_bot()
