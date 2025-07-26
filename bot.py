@@ -433,7 +433,7 @@ def detect_rising_three(candles):
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
-    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
+    c2, c1, c0 = candles[-4], candles[-3], cables[-2]
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
