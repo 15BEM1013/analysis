@@ -21,7 +21,7 @@ CHAT_ID = os.getenv('CHAT_ID', '655537138')
 REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
 REDIS_PORT = os.getenv('REDIS_PORT', 6379)
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
-TIMEFRAME = '15m'
+TIMEFRAMES = ['30m', '1h']
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
@@ -121,7 +121,7 @@ def load_closed_trades():
 def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
+    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
     for attempt in range(retries):
         try:
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
@@ -140,7 +140,7 @@ def send_telegram(msg, retries=3):
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
-    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
+    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
     try:
         response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         if response.get('ok'):
@@ -153,7 +153,7 @@ def edit_telegram_message(message_id, new_text):
 
 def send_csv_to_telegram(filename):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    proxies = {'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712', 'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'}
+    proxies = {'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712', 'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'}
     try:
         if not os.path.exists(filename):
             print(f"File {filename} does not exist")
@@ -180,8 +180,8 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'future'},
     'enableRateLimit': True,
     'proxies': {
-        'http': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712',
-        'https': 'http://iawsbfjz:qg9l4lpqcmpl@207.244.217.165:6712'
+        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
+        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
     }
 })
 app = Flask(__name__)
@@ -376,12 +376,19 @@ def get_symbols():
     return symbols
 
 # === CANDLE CLOSE ===
-def get_next_candle_close():
+def get_next_candle_close(timeframe):
     now = get_ist_time()
     seconds = now.minute * 60 + now.second
-    seconds_to_next = (15 * 60) - (seconds % (15 * 60))
-    if seconds_to_next < 5:
-        seconds_to_next += 15 * 60
+    if timeframe == '30m':
+        seconds_to_next = (30 * 60) - (seconds % (30 * 60))
+        if seconds_to_next < 5:
+            seconds_to_next += 30 * 60
+    elif timeframe == '1h':
+        seconds_to_next = (60 * 60) - (seconds % (60 * 60))
+        if seconds_to_next < 5:
+            seconds_to_next += 60 * 60
+    else:
+        seconds_to_next = 15 * 60  # Fallback for unexpected timeframes
     return time.time() + seconds_to_next
 
 # === TP/SL CHECK ===
@@ -392,7 +399,7 @@ def check_tp_sl():
             trades_to_remove = []
             for sym, trade in list(open_trades.items()):
                 try:
-                    ticker = exchange.fetch_ticker(sym)
+                    ticker = exchange.fetch_ticker(sym.split(':')[0])  # Extract symbol from symbol:timeframe key
                     last = ticker['last']
                     pnl = 0
                     hit = ""
@@ -441,7 +448,8 @@ def check_tp_sl():
                             'first_candle_body': trade['first_candle_body'],
                             'first_candle_wick_tick': trade['first_candle_wick_tick'],
                             'first_candle_body_tick': trade['first_candle_body_tick'],
-                            'second_candle_tp_touched': trade['second_candle_tp_touched']
+                            'second_candle_tp_touched': trade['second_candle_tp_touched'],
+                            'timeframe': trade['timeframe']
                         }
                         trade_id = f"{closed_trade['symbol']}:{closed_trade['close_time']}:{closed_trade['entry']}:{closed_trade['pnl']}"
                         if not redis_client.sismember('exported_trades', trade_id):
@@ -449,7 +457,7 @@ def check_tp_sl():
                             trades_to_remove.append(sym)
                             ema_status = trade['ema_status']
                             new_msg = (
-                                f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                                f"{sym} ({trade['timeframe']}) - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
                                 f"Signal Time: {trade['signal_time']} ({trade['signal_weekday']})\n"
                                 f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
                                 f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
@@ -538,12 +546,12 @@ def export_to_csv():
         send_telegram(f"❌ Error in export_to_csv: {e}")
 
 # === PROCESS SYMBOL ===
-def process_symbol(symbol, alert_queue):
+def process_symbol(symbol, timeframe, alert_queue):
     try:
         for attempt in range(3):
-            candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=50)
+            candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
             if len(candles) < 30:
-                print(f"{symbol}: Skipped, insufficient candles ({len(candles)})")
+                print(f"{symbol} ({timeframe}): Skipped, insufficient candles ({len(candles)})")
                 return
             if attempt < 2 and candles[-1][0] > candles[-2][0]:
                 break
@@ -552,9 +560,8 @@ def process_symbol(symbol, alert_queue):
         signal_time = candles[-2][0]
         signal_entry_time = get_ist_time().strftime('%Y-%m-%d %H:%M:%S')
         signal_weekday = get_ist_time().strftime('%A')
-        if (symbol, 'rising') in sent_signals and sent_signals[(symbol, 'rising')] == signal_time:
-            return
-        if (symbol, 'falling') in sent_signals and sent_signals[(symbol, 'falling')] == signal_time:
+        signal_key = (symbol, 'rising', timeframe) if detect_rising_three(candles) else (symbol, 'falling', timeframe)
+        if signal_key in sent_signals and sent_signals[signal_key] == signal_time:
             return
 
         ema21 = calculate_ema(candles, period=21)
@@ -565,7 +572,7 @@ def process_symbol(symbol, alert_queue):
         obv_trend = calculate_obv(candles)
         macd_line, macd_signal, macd_status = calculate_macd(candles, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL)
         if any(v is None for v in [ema21, ema9, rsi, adx, big_candle_rsi, macd_line]):
-            print(f"{symbol}: Skipped, indicator calculation failed")
+            print(f"{symbol} ({timeframe}): Skipped, indicator calculation failed")
             return
 
         rising = detect_rising_three(candles)
@@ -592,7 +599,7 @@ def process_symbol(symbol, alert_queue):
                 if c1[5] <= c0[5]:
                     reasons.append("Volume not decreasing")
             if reasons:
-                print(f"{symbol}: No pattern detected. Reasons: {', '.join(reasons)}")
+                print(f"{symbol} ({timeframe}): No pattern detected. Reasons: {', '.join(reasons)}")
             return
 
         entry = candles[-2][4]
@@ -666,14 +673,14 @@ def process_symbol(symbol, alert_queue):
         pattern, wick_tick, body_tick, pressure = detect_candle_pattern(first_candle, is_bullish(first_candle), 'rising' if rising else 'falling')
 
         if rising:
-            sent_signals[(symbol, 'rising')] = signal_time
+            sent_signals[(symbol, 'rising', timeframe)] = signal_time
             tp = candles[-4][4]
             sl = entry * (1 - SL_PCT)
             second_candle = candles[-2]
             tp_touched = second_candle[2] >= tp
             second_tick = '✅' if not tp_touched else '❌'
         else:
-            sent_signals[(symbol, 'falling')] = signal_time
+            sent_signals[(symbol, 'falling', timeframe)] = signal_time
             tp = candles[-4][4]
             sl = entry * (1 + SL_PCT)
             second_candle = candles[-2]
@@ -705,7 +712,8 @@ def process_symbol(symbol, alert_queue):
             'first_candle_body': body_pct_val,
             'first_candle_wick_tick': wick_tick,
             'first_candle_body_tick': body_tick,
-            'second_candle_tp_touched': second_tick
+            'second_candle_tp_touched': second_tick,
+            'timeframe': timeframe
         }
 
         pattern_msg = (
@@ -716,7 +724,7 @@ def process_symbol(symbol, alert_queue):
             pattern_msg += f" ({pressure})"
 
         msg = (
-            f"{symbol} - {'RISING' if rising else 'FALLING'} PATTERN\n"
+            f"{symbol} ({timeframe}) - {'RISING' if rising else 'FALLING'} PATTERN\n"
             f"Signal Time: {signal_entry_time} ({signal_weekday})\n"
             f"{'Above' if rising else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
             f"ema 9 {'above' if rising else 'below'} 21 - {ema_status['ema9_ema21']}\n"
@@ -732,12 +740,12 @@ def process_symbol(symbol, alert_queue):
             f"sl - {sl:.4f}"
         )
         trade['msg_id'] = send_telegram(msg)
-        open_trades[symbol] = trade
+        open_trades[f"{symbol}:{timeframe}"] = trade
         save_trades()
         alert_queue.put((symbol, trade))
     except Exception as e:
-        print(f"Error processing {symbol}: {e}")
-        send_telegram(f"❌ Error processing {symbol}: {e}")
+        print(f"Error processing {symbol} ({timeframe}): {e}")
+        send_telegram(f"❌ Error processing {symbol} ({timeframe}): {e}")
 
 # === MAIN LOOP ===
 def run_bot():
@@ -750,16 +758,22 @@ def run_bot():
             symbols = get_symbols()
             chunk_size = math.ceil(len(symbols) / MAX_WORKERS)
             chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
-            for chunk in chunks:
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    futures = [executor.submit(process_symbol, symbol, alert_queue) for symbol in chunk]
-                    for future in as_completed(futures):
-                        future.result()
-                time.sleep(BATCH_DELAY)
-            export_to_csv()
-            print(f"Number of open trades after scan: {len(open_trades)}")
-            send_telegram(f"Number of open trades after scan: {len(open_trades)}")
-            time.sleep(get_next_candle_close() - time.time())
+            for timeframe in TIMEFRAMES:
+                print(f"Scanning for timeframe: {timeframe}")
+                send_telegram(f"Starting scan for timeframe: {timeframe}")
+                for chunk in chunks:
+                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        futures = [executor.submit(process_symbol, symbol, timeframe, alert_queue) for symbol in chunk]
+                        for future in as_completed(futures):
+                            future.result()
+                    time.sleep(BATCH_DELAY)
+                export_to_csv()
+                print(f"Number of open trades after {timeframe} scan: {len(open_trades)}")
+                send_telegram(f"Number of open trades after {timeframe} scan: {len(open_trades)}")
+            # Wait for the next candle close of the shortest timeframe (30m)
+            sleep_time = min([get_next_candle_close(tf) for tf in TIMEFRAMES]) - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
     except Exception as e:
         print(f"Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
         send_telegram(f"❌ Scan loop error at {get_ist_time().strftime('%Y-%m-%d %H:%M:%S')}: {e}")
