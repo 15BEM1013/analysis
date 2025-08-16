@@ -1,10 +1,9 @@
 import redis
 import json
 import os
-import ccxt
+import requests
 import time
 import threading
-import requests
 from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,9 +16,9 @@ import logging
 # === CONFIG ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
 CHAT_ID = os.getenv('CHAT_ID', '655537138')
-REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
+REDIS_HOST = os.getenv('REDIS_HOST', 'equipped-fly-39632.upstash.io')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AZrQAAIncDFiNzM2YTQ1MTFkNGY0YjY2OWM5ODg0ZDdmZTI0YzhmZnAxMzk2MzI')
 PROXY_HOST = os.getenv('PROXY_HOST', '207.244.217.165')
 PROXY_PORT = os.getenv('PROXY_PORT', '6712')
 PROXY_USERNAME = os.getenv('PROXY_USERNAME', 'tytogvbu')
@@ -310,22 +309,6 @@ def load_closed_trades():
         logger.error(f"Error loading closed trades: {e}")
         return []
 
-# === INIT ===
-exchange = ccxt.binance({
-    'apiKey': os.getenv('BINANCE_API_KEY'),
-    'secret': os.getenv('BINANCE_API_SECRET'),
-    'options': {'defaultType': 'future'},
-    'enableRateLimit': True,
-    'proxies': {
-        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
-        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
-    }
-})
-
-sent_signals = {}
-open_trades = {}
-closed_trades = []
-
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -461,17 +444,21 @@ def detect_falling_three(candles):
         logger.debug(f"Falling three failed: {reasons}")
     return big_red and small_green_1 and small_green_0 and volume_decreasing
 
-# === SYMBOLS ===
+# === MARKET DATA ===
 def get_symbols():
     try:
-        markets = exchange.load_markets()
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        proxies = {
+            'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
+        }
+        response = requests.get(url, proxies=proxies, timeout=10).json()
         symbols = [
-            s for s in markets
-            if s.endswith('USDT') and
-               markets[s].get('contract') and
-               markets[s].get('active') and
-               markets[s].get('info', {}).get('status') == 'TRADING' and
-               len(s.split('/')[0]) <= 10
+            s['symbol'] for s in response['symbols']
+            if s['symbol'].endswith('USDT') and
+               s['contractType'] == 'PERPETUAL' and
+               s['status'] == 'TRADING' and
+               len(s['symbol'].split('USDT')[0]) <= 10
         ]
         logger.info(f"Fetched {len(symbols)} symbols: {symbols[:5]}...")
         send_telegram(f"✅ Fetched {len(symbols)} symbols: {symbols[:5]}...")
@@ -480,6 +467,42 @@ def get_symbols():
         logger.error(f"Error fetching symbols: {e}")
         send_telegram(f"❌ Error fetching symbols: {e}")
         return []
+
+def fetch_ohlcv(symbol, timeframe, limit=50):
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={timeframe}&limit={limit}"
+        proxies = {
+            'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
+        }
+        response = requests.get(url, proxies=proxies, timeout=10).json()
+        if isinstance(response, list):
+            return [[float(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])] for c in response]
+        else:
+            logger.error(f"Invalid OHLCV response for {symbol}: {response}")
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching OHLCV for {symbol}: {e}")
+        send_telegram(f"❌ Error fetching OHLCV for {symbol}: {e}")
+        return []
+
+def fetch_ticker(symbol):
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}"
+        proxies = {
+            'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+            'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
+        }
+        response = requests.get(url, proxies=proxies, timeout=5).json()
+        if 'price' in response:
+            return {'last': float(response['price'])}
+        else:
+            logger.error(f"Invalid ticker response for {symbol}: {response}")
+            return {'last': 0}
+    except Exception as e:
+        logger.error(f"Error fetching ticker for {symbol}: {e}")
+        send_telegram(f"❌ Error fetching ticker for {symbol}: {e}")
+        return {'last': 0}
 
 # === CANDLE CLOSE ===
 def get_next_candle_close(timeframe):
@@ -515,8 +538,11 @@ def check_tp_sl():
                         continue
 
                     symbol = sym.split(':')[0]
-                    ticker = exchange.fetch_ticker(symbol)
+                    ticker = fetch_ticker(symbol)
                     last = ticker['last']
+                    if last == 0:
+                        logger.warning(f"Skipping TP/SL check for {sym}: Invalid ticker price")
+                        continue
                     pnl = 0
                     hit = ""
                     if trade['side'] == 'buy':
@@ -666,7 +692,7 @@ def process_symbol(symbol, timeframe, alert_queue):
     try:
         for attempt in range(3):
             try:
-                candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
+                candles = fetch_ohlcv(symbol, timeframe)
                 if len(candles) < 30:
                     logger.info(f"{symbol} ({timeframe}): Skipped, insufficient candles ({len(candles)})")
                     return
