@@ -716,7 +716,7 @@ def process_symbol(symbol, timeframe, alert_queue):
         def detect_candle_pattern(candle, is_bullish, pattern_type):
             candle_body_pct = (abs(candle[1] - candle[4]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
             upper_wick_pct = ((candle[2] - max(candle[1], candle[4])) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
-            lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - candle[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
+            lower_wick_pct = ((min(candle[1], candle[4]) - candle[3]) / (candle[2] - cable[3]) * 100) if (candle[2] - candle[3]) != 0 else 0
             wick_tick = '✅'
             body_tick = '✅' if candle_body_pct >= 1 else '⚠️'
             pressure = None
