@@ -8,3 +8,4 @@ numpy
 python-telegram-bot
 pandas
 redis
+python-dotenv
