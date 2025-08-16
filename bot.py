@@ -20,7 +20,11 @@ CHAT_ID = os.getenv('CHAT_ID', '655537138')
 REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
-TIMEFRAMES = ['30m']  # Updated to only include 30m timeframe
+PROXY_HOST = os.getenv('PROXY_HOST', '207.244.217.165')
+PROXY_PORT = os.getenv('PROXY_PORT', '6712')
+PROXY_USERNAME = os.getenv('PROXY_USERNAME', 'tytogvbu')
+PROXY_PASSWORD = os.getenv('PROXY_PASSWORD', 'wb64rnowfoby')
+TIMEFRAMES = ['30m']
 MIN_BIG_BODY_PCT = 0.5
 MAX_SMALL_BODY_PCT = 0.5
 MIN_LOWER_WICK_PCT = 15.0
@@ -62,8 +66,8 @@ def send_telegram(msg, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     proxies = {
-        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
-        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
     }
     for attempt in range(retries):
         try:
@@ -95,8 +99,8 @@ def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     proxies = {
-        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
-        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
     }
     try:
         response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
@@ -114,8 +118,8 @@ def send_csv_to_telegram(filename):
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     proxies = {
-        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
-        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
     }
     try:
         if not os.path.exists(filename):
@@ -313,8 +317,8 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'future'},
     'enableRateLimit': True,
     'proxies': {
-        'http': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712',
-        'https': 'http://tytogvbu:wb64rnowfoby@207.244.217.165:6712'
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
     }
 })
 
