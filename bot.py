@@ -45,6 +45,11 @@ REDIS_RETRIES = 3
 REDIS_RETRY_DELAY = 5
 DEBUG_MODE = True
 
+# === GLOBAL VARIABLES ===
+open_trades = {}
+sent_signals = {}
+redis_client = None
+
 # === LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,6 +58,7 @@ logger = logging.getLogger(__name__)
 telegram_enabled = True
 telegram_error_count = 0
 last_error_time = 0
+
 def send_telegram(msg, retries=3):
     global telegram_enabled, telegram_error_count, last_error_time
     if not telegram_enabled:
@@ -149,7 +155,6 @@ def test_telegram():
     return False
 
 # === REDIS CLIENT ===
-redis_client = None
 def init_redis():
     global redis_client
     for attempt in range(REDIS_RETRIES):
@@ -178,6 +183,7 @@ def get_ist_time():
 
 # === TRADE PERSISTENCE ===
 REQUIRED_TRADE_KEYS = ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']
+
 def save_trades():
     try:
         valid_trades = {}
@@ -190,59 +196,44 @@ def save_trades():
                 logger.warning(f"Invalid trade for {key}: invalid timeframe {trade['timeframe']}")
                 continue
             valid_trades[key] = trade
-        if len(valid_trades) < len(open_trades):
-            logger.warning(f"Removed {len(open_trades) - len(valid_trades)} invalid trades before saving")
+        
         if redis_client:
             redis_client.set('open_trades', json.dumps(valid_trades, default=str))
-            logger.info("Trades saved to Redis")
-            send_telegram("✅ Trades saved to Redis")
+            redis_client.set('sent_signals', json.dumps(sent_signals, default=str))
+            logger.info("Trades and signals saved to Redis")
         else:
             with open(LOCAL_STORAGE_FILE, 'w') as f:
-                json.dump(valid_trades, f, default=str)
+                json.dump({
+                    'open_trades': valid_trades,
+                    'sent_signals': sent_signals
+                }, f, default=str)
             logger.info("Trades saved to local storage")
     except Exception as e:
         logger.error(f"Error saving trades: {e}")
         send_telegram(f"❌ Error saving trades: {e}")
 
 def load_trades():
-    global open_trades
+    global open_trades, sent_signals
     try:
-        open_trades = {}
         if redis_client:
             data = redis_client.get('open_trades')
+            signals_data = redis_client.get('sent_signals')
             if data:
-                loaded_trades = json.loads(data)
-                for key, trade in loaded_trades.items():
-                    missing_keys = [k for k in REQUIRED_TRADE_KEYS if k not in trade]
-                    if missing_keys:
-                        logger.warning(f"Invalid trade for {key}: missing keys {missing_keys}")
-                        continue
-                    if trade['timeframe'] not in TIMEFRAMES:
-                        logger.warning(f"Invalid trade for {key}: invalid timeframe {trade['timeframe']}")
-                        continue
-                    open_trades[key] = trade
-                if len(open_trades) < len(loaded_trades):
-                    logger.warning(f"Removed {len(loaded_trades) - len(open_trades)} invalid trades during load")
-                    save_trades()
-                logger.info(f"Loaded {len(open_trades)} valid trades from Redis")
+                open_trades = json.loads(data)
+            if signals_data:
+                sent_signals = json.loads(signals_data)
         else:
             if os.path.exists(LOCAL_STORAGE_FILE):
                 with open(LOCAL_STORAGE_FILE, 'r') as f:
-                    loaded_trades = json.load(f)
-                    for key, trade in loaded_trades.items():
-                        missing_keys = [k for k in REQUIRED_TRADE_KEYS if k not in trade]
-                        if missing_keys:
-                            logger.warning(f"Invalid trade for {key}: missing keys {missing_keys}")
-                            continue
-                        if trade['timeframe'] not in TIMEFRAMES:
-                            logger.warning(f"Invalid trade for {key}: invalid timeframe {trade['timeframe']}")
-                            continue
-                        open_trades[key] = trade
-                    logger.info(f"Loaded {len(open_trades)} valid trades from local storage")
+                    data = json.load(f)
+                    open_trades = data.get('open_trades', {})
+                    sent_signals = data.get('sent_signals', {})
+        logger.info(f"Loaded {len(open_trades)} trades and {len(sent_signals)} signals")
     except Exception as e:
         logger.error(f"Error loading trades: {e}")
         send_telegram(f"❌ Error loading trades: {e}")
         open_trades = {}
+        sent_signals = {}
 
 def cleanup_corrupted_trades():
     global open_trades
@@ -275,7 +266,6 @@ def save_closed_trades(closed_trade):
             redis_client.set('closed_trades', json.dumps(all_closed_trades, default=str))
             redis_client.sadd('exported_trades', trade_id)
             logger.info(f"Closed trade saved to Redis: {trade_id}")
-            send_telegram(f"✅ Closed trade saved to Redis: {trade_id}")
         else:
             with open(CLOSED_TRADE_CSV, 'a') as f:
                 pd.DataFrame([closed_trade]).to_csv(f, index=False, header=not os.path.exists(CLOSED_TRADE_CSV))
