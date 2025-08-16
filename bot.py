@@ -112,7 +112,15 @@ def edit_telegram_message(message_id, new_text):
         print(f"Edit error: {e}")
 
 # === INIT ===
-exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+exchange = ccxt.binance({
+    'options': {'defaultType': 'future'},
+    'enableRateLimit': True,
+    'verbose': True,
+    'proxies': {
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+    }
+})
 app = Flask(__name__)
 
 sent_signals = {}
@@ -174,8 +182,21 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    markets = exchange.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    for attempt in range(3):
+        try:
+            markets = exchange.load_markets()
+            return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+        except ccxt.ExchangeNotAvailable as e:
+            print(f"Failed to load markets (attempt {attempt + 1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5)
+            else:
+                print("Max retries reached. Skipping symbol fetch.")
+                return []
+        except Exception as e:
+            print(f"Unexpected error in get_symbols: {e}")
+            return []
+    return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
