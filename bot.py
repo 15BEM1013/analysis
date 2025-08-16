@@ -27,6 +27,12 @@ TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 
+# Proxy Configuration
+PROXY_HOST = '207.244.217.165'
+PROXY_PORT = '6712'
+PROXY_USERNAME = 'tytogvbu'
+PROXY_PASSWORD = 'wb64rnowfoby'
+
 # === TIME ZONE HELPER ===
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
@@ -76,12 +82,16 @@ def load_closed_trades():
         print(f"Error loading closed trades: {e}")
         return []
 
-# === TELEGRAM ===
+# === TELEGRAM WITH PROXY ===
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
+    proxies = {
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
+    }
     try:
-        response = requests.post(url, data=data, timeout=5).json()
+        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         print(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
@@ -91,8 +101,12 @@ def send_telegram(msg):
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
+    proxies = {
+        'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}',
+        'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}'
+    }
     try:
-        requests.post(url, data=data, timeout=5)
+        requests.post(url, data=data, proxies=proxies, timeout=5)
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
