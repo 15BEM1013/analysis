@@ -12,6 +12,10 @@ import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
@@ -20,8 +24,9 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'equipped-fly-39632.upstash.io')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AZrQAAIncDFiNzM2YTQ1MTFkNGY0YjY2OWM5ODg0ZDdmZTI0YzhmZnAxMzk2MzI')
 PROXY_HOST = os.getenv('PROXY_HOST', '207.244.217.165')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AZrQAAIncDFiNzM2YTQ1MTFkNGY0YjY2OWM5ODg0ZDdmZTI0YzhmZnAxMzk2MzI')
+PROXY_PORT = os.getenv('PROXY_PORT', '6712')
+PROXY_USERNAME = os.getenv('PROXY_USERNAME', 'tytogvbu')
+PROXY_PASSWORD = os.getenv('PROXY_PASSWORD', 'wb64rnowfoby')
 TIMEFRAMES = ['30m']
 MIN_BIG_BODY_PCT = 0.5
 MAX_SMALL_BODY_PCT = 0.5
@@ -307,11 +312,6 @@ def load_closed_trades():
     except Exception as e:
         logger.error(f"Error loading closed trades: {e}")
         return []
-
-# === INIT ===
-sent_signals = {}
-open_trades = {}
-closed_trades = []
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
