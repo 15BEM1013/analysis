@@ -15,15 +15,15 @@ import logging
 import argparse
 
 # === CONFIG ===
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE')
-CHAT_ID = os.getenv('CHAT_ID', '655537138')
-REDIS_HOST = os.getenv('REDIS_HOST', 'equipped-fly-39632.upstash.io')
+BOT_TOKEN = os.getenv('BOT_TOKEN', 'your_bot_token_here')
+CHAT_ID = os.getenv('CHAT_ID', 'your_chat_id_here')
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis_host_here')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AZrQAAIncDFiNzM2YTQ1MTFkNGY0YjY2OWM5ODg0ZDdmZTI0YzhmZnAxMzk2MzI')
-PROXY_HOST = os.getenv('PROXY_HOST', '207.244.217.165')
-PROXY_PORT = os.getenv('PROXY_PORT', '6712')
-PROXY_USERNAME = os.getenv('PROXY_USERNAME', 'tytogvbu')
-PROXY_PASSWORD = os.getenv('PROXY_PASSWORD', 'wb64rnowfoby')
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'redis_password_here')
+PROXY_HOST = os.getenv('PROXY_HOST', 'proxy_host_here')
+PROXY_PORT = os.getenv('PROXY_PORT', 'proxy_port_here')
+PROXY_USERNAME = os.getenv('PROXY_USERNAME', 'proxy_username_here')
+PROXY_PASSWORD = os.getenv('PROXY_PASSWORD', 'proxy_password_here')
 TIMEFRAMES = ['30m']
 MIN_BIG_BODY_PCT = 0.5
 MAX_SMALL_BODY_PCT = 0.5
@@ -39,14 +39,14 @@ ADX_PERIOD = 14
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
-TELEGRAM_ERROR_COOLDOWN = 60  # Reduced from 300
+TELEGRAM_ERROR_COOLDOWN = 60
 TELEGRAM_MAX_ERRORS = 5
 LOCAL_STORAGE_FILE = '/tmp/trades.json'
 REDIS_RETRIES = 3
 REDIS_RETRY_DELAY = 5
 DEBUG_MODE = True
 SUPPRESS_DUPLICATE_PATTERNS = True
-SAVE_INTERVAL = 60  # Minimum seconds between saves
+SAVE_INTERVAL = 60
 
 # === GLOBAL VARIABLES ===
 open_trades = {}
@@ -113,6 +113,20 @@ def send_telegram(msg, retries=3):
     logger.error(f"Failed to send Telegram message after {retries} attempts: {msg[:50]}...")
     return None
 
+def test_telegram():
+    """Test Telegram connectivity"""
+    test_msg = "✅ Bot Telegram connection test"
+    try:
+        message_id = send_telegram(test_msg)
+        if message_id:
+            logger.info("Telegram connection test successful")
+            return True
+        logger.error("Telegram test failed - no message ID returned")
+        return False
+    except Exception as e:
+        logger.error(f"Telegram connection test failed: {e}")
+        return False
+
 # === REDIS UTILITIES ===
 def init_redis():
     global redis_client
@@ -135,6 +149,11 @@ def init_redis():
     
     logger.error("Failed to connect to Redis after retries. Using local storage.")
     return False
+
+# === TIME UTILITIES ===
+def get_ist_time():
+    ist = pytz.timezone('Asia/Kolkata')
+    return datetime.now(ist)
 
 # === TRADE PERSISTENCE ===
 REQUIRED_TRADE_KEYS = ['symbol', 'side', 'entry', 'tp', 'sl', 'timeframe']
@@ -236,18 +255,10 @@ def reset_all_trades():
 # === TRADE PROCESSING ===
 def process_symbol(symbol, timeframe, alert_queue):
     try:
-        for attempt in range(3):
-            try:
-                candles = fetch_ohlcv(symbol, timeframe, limit=50)
-                if len(candles) < 30:
-                    logger.debug(f"{symbol} ({timeframe}): Insufficient candles ({len(candles)})")
-                    return
-                if attempt < 2 and candles[-1][0] > candles[-2][0]:
-                    break
-                time.sleep(1)
-            except Exception as e:
-                logger.error(f"Error fetching OHLCV for {symbol} ({timeframe}): {e}")
-                return
+        candles = fetch_ohlcv(symbol, timeframe, limit=50)
+        if len(candles) < 30:
+            logger.debug(f"{symbol} ({timeframe}): Insufficient candles ({len(candles)})")
+            return
 
         signal_time = candles[-2][0]
         signal_entry_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
@@ -258,8 +269,7 @@ def process_symbol(symbol, timeframe, alert_queue):
             logger.debug(f"Suppressed duplicate pattern for {symbol} {timeframe}")
             return
 
-        # ... rest of your process_symbol implementation ...
-        # (Keep all your existing pattern detection and trade creation logic)
+        # ... rest of your pattern detection and trade creation logic ...
 
     except Exception as e:
         logger.error(f"Error processing {symbol} ({timeframe}): {e}")
@@ -285,7 +295,6 @@ def run_bot(reset=False, debug=False):
                 return
         
         load_trades()
-        cleanup_corrupted_trades()
         
         alert_queue = queue.Queue()
         threading.Thread(target=check_tp_sl, daemon=True).start()
@@ -297,12 +306,12 @@ def run_bot(reset=False, debug=False):
                 time.sleep(60)
                 continue
                 
-            chunk_size = math.ceil(len(symbols) / MAX_WORKERS)
-            chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
-            
             for timeframe in TIMEFRAMES:
                 logger.info(f"Scanning for timeframe: {timeframe}")
                 send_telegram(f"Starting scan for timeframe: {timeframe}")
+                
+                chunk_size = math.ceil(len(symbols) / MAX_WORKERS)
+                chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
                 
                 for chunk in chunks:
                     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -314,7 +323,6 @@ def run_bot(reset=False, debug=False):
                                 logger.error(f"Error in future for {timeframe}: {e}")
                     time.sleep(BATCH_DELAY)
                 
-                export_to_csv()
                 logger.info(f"Open trades after {timeframe} scan: {len(open_trades)}")
                 
             sleep_time = min([get_next_candle_close(tf) for tf in TIMEFRAMES]) - time.time()
