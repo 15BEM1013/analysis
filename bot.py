@@ -20,7 +20,7 @@ CHAT_ID = os.getenv('CHAT_ID', '655537138')
 REDIS_HOST = os.getenv('REDIS_HOST', 'climbing-narwhal-53855.upstash.io')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'AdJfAAIjcDEzNDdhYTU4OGY1ZDc0ZWU3YmQzY2U0MTVkNThiNzU0OXAxMA')
-TIMEFRAMES = ['30m', '1h']
+TIMEFRAMES = ['30m']  # Updated to only include 30m timeframe
 MIN_BIG_BODY_PCT = 0.5
 MAX_SMALL_BODY_PCT = 0.5
 MIN_LOWER_WICK_PCT = 15.0
@@ -433,7 +433,7 @@ def detect_rising_three(candles):
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
-    c2, c1, c0 = candles[-4], candles[-3], cables[-2]
+    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
@@ -485,10 +485,6 @@ def get_next_candle_close(timeframe):
         seconds_to_next = (30 * 60) - (seconds % (30 * 60))
         if seconds_to_next < 5:
             seconds_to_next += 30 * 60
-    elif timeframe == '1h':
-        seconds_to_next = (60 * 60) - (seconds % (60 * 60))
-        if seconds_to_next < 5:
-            seconds_to_next += 60 * 60
     else:
         seconds_to_next = 15 * 60
     return time.time() + seconds_to_next
