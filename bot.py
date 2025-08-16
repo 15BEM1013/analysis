@@ -197,15 +197,18 @@ def save_trades():
                 continue
             valid_trades[key] = trade
         
+        # Convert tuple keys to strings for Redis compatibility
+        str_sent_signals = {f"{k[0]}:{k[1]}:{k[2]}": v for k, v in sent_signals.items()}
+        
         if redis_client:
             redis_client.set('open_trades', json.dumps(valid_trades, default=str))
-            redis_client.set('sent_signals', json.dumps(sent_signals, default=str))
+            redis_client.set('sent_signals', json.dumps(str_sent_signals, default=str))
             logger.info("Trades and signals saved to Redis")
         else:
             with open(LOCAL_STORAGE_FILE, 'w') as f:
                 json.dump({
                     'open_trades': valid_trades,
-                    'sent_signals': sent_signals
+                    'sent_signals': sent_signals  # Keep as tuples for local storage
                 }, f, default=str)
             logger.info("Trades saved to local storage")
     except Exception as e:
@@ -221,7 +224,9 @@ def load_trades():
             if data:
                 open_trades = json.loads(data)
             if signals_data:
-                sent_signals = json.loads(signals_data)
+                # Convert string keys back to tuples
+                loaded_signals = json.loads(signals_data)
+                sent_signals = {tuple(k.split(':')): v for k, v in loaded_signals.items()}
         else:
             if os.path.exists(LOCAL_STORAGE_FILE):
                 with open(LOCAL_STORAGE_FILE, 'r') as f:
