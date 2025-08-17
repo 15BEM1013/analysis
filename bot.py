@@ -27,6 +27,16 @@ TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 
+# === PROXY CONFIGURATION ===
+PROXY_HOST = '207.244.217.165'
+PROXY_PORT = '6712'
+PROXY_USERNAME = 'tytogvbu'
+PROXY_PASSWORD = 'wb64rnowfoby'
+proxies = {
+    "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
+    "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
+}
+
 # === TIME ZONE HELPER ===
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
@@ -98,7 +108,11 @@ def edit_telegram_message(message_id, new_text):
         print(f"Edit error: {e}")
 
 # === INIT ===
-exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+exchange = ccxt.binance({
+    'options': {'defaultType': 'future'},
+    'proxies': proxies,
+    'enableRateLimit': True
+})
 app = Flask(__name__)
 
 sent_signals = {}
