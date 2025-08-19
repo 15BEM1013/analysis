@@ -19,18 +19,18 @@ MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
 MAX_WORKERS = 10
-BATCH_DELAY = 2.5
-NUM_CHUNKS = 4
+BATCH_DELAY = 1.0
+NUM_CHUNKS = 8
 CAPITAL = 10.0
 SL_PCT = 1.0 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
-MAX_OPEN_TRADES = 5  # Maximum number of simultaneous open trades
+MAX_OPEN_TRADES = 5
 CATEGORY_PRIORITY = {
-    'two_green': 3,  # Highest priority
+    'two_green': 3,
     'one_green_one_caution': 2,
-    'two_cautions': 1  # Lowest priority
+    'two_cautions': 1
 }
 
 # === PROXY CONFIGURATION ===
@@ -154,7 +154,7 @@ def round_price(symbol, price):
         return round(price, precision)
     except Exception as e:
         print(f"Error rounding price for {symbol}: {e}")
-        return price  # Fallback to unrounded price
+        return price
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
@@ -198,9 +198,9 @@ def get_symbols():
 def get_next_candle_close():
     now = get_ist_time()
     seconds = now.minute * 60 + now.second
-    seconds_to_next = (15 * 60) - (seconds % (15 * 60))
+    seconds_to_next = (30 * 60) - (seconds % (30 * 60))
     if seconds_to_next < 5:
-        seconds_to_next += 15 * 60
+        seconds_to_next += 30 * 60
     return time.time() + seconds_to_next
 
 # === TP/SL CHECK ===
@@ -208,6 +208,11 @@ def check_tp_sl():
     global closed_trades
     while True:
         try:
+            next_close = get_next_candle_close()
+            wait_time = max(0, next_close - time.time())
+            print(f"⏳ TP/SL waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
+            time.sleep(wait_time)
+
             for sym, trade in list(open_trades.items()):
                 try:
                     ticker = exchange.fetch_ticker(sym)
@@ -253,12 +258,12 @@ def check_tp_sl():
                             f"sl - {trade['sl']}: {'❌' if 'SL' in hit else ''}\n"
                             f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                         )
-                        edit_telegram_message(trade['msg_id'], new_msg)
+                        trade['msg'] = new_msg  # Update message to be sent later
+                        trade['hit'] = hit
                         del open_trades[sym]
                         save_trades()
                 except Exception as e:
                     print(f"TP/SL check error on {sym}: {e}")
-            time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
             print(f"TP/SL loop error: {e}")
             time.sleep(5)
@@ -287,7 +292,7 @@ def process_symbol(symbol, alert_queue):
         big_candle_close = round_price(symbol, candles[-4][4])
 
         if detect_rising_three(candles):
-            sl = round_price(symbol, entry_price * (1 - 0.015))  # Fixed 1.5% SL
+            sl = round_price(symbol, entry_price * (1 - 0.015))
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
@@ -314,10 +319,10 @@ def process_symbol(symbol, alert_queue):
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price))
+            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'buy'))
 
         elif detect_falling_three(candles):
-            sl = round_price(symbol, entry_price * (1 + 0.015))  # Fixed 1.5% SL
+            sl = round_price(symbol, entry_price * (1 + 0.015))
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
@@ -344,7 +349,7 @@ def process_symbol(symbol, alert_queue):
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price))
+            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'sell'))
 
     except ccxt.RateLimitExceeded:
         time.sleep(5)
@@ -370,66 +375,166 @@ def scan_loop():
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
 
     def send_alerts():
+        pending_alerts = []
         while True:
             try:
-                symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price = alert_queue.get(timeout=1)
-                if len(open_trades) < MAX_OPEN_TRADES:
-                    mid = send_telegram(msg)
-                    if mid and symbol not in open_trades:
-                        trade = {
-                            'side': 'buy' if 'RISING' in msg else 'sell',
-                            'entry': float(msg.split('entry - ')[1].split('\n')[0]),
-                            'tp': float(msg.split('tp - ')[1].split('\n')[0]),
-                            'sl': float(msg.split('sl - ')[1].split('\n')[0]),
-                            'msg': msg,
-                            'msg_id': mid,
-                            'ema_status': ema_status,
-                            'category': category,
-                            'eth_ema_status': eth_ema_status,
-                            'entry_time': signal_time,
-                            'entry_price': entry_price
-                        }
-                        open_trades[symbol] = trade
-                        save_trades()
-                else:
-                    # Check if we can replace a lower-priority trade
-                    lowest_priority = min(
-                        (CATEGORY_PRIORITY[trade['category']] for trade in open_trades.values()),
-                        default=0
-                    )
-                    if CATEGORY_PRIORITY[category] > lowest_priority:
-                        # Find and remove a lower-priority trade
-                        for sym, trade in list(open_trades.items()):
-                            if CATEGORY_PRIORITY[trade['category']] == lowest_priority:
-                                edit_telegram_message(
-                                    trade['msg_id'],
-                                    f"{sym} - Trade canceled to prioritize higher-quality signal."
-                                )
-                                del open_trades[sym]
-                                save_trades()
-                                mid = send_telegram(msg)
-                                if mid and symbol not in open_trades:
-                                    trade = {
-                                        'side': 'buy' if 'RISING' in msg else 'sell',
-                                        'entry': float(msg.split('entry - ')[1].split('\n')[0]),
-                                        'tp': float(msg.split('tp - ')[1].split('\n')[0]),
-                                        'sl': float(msg.split('sl - ')[1].split('\n')[0]),
-                                        'msg': msg,
-                                        'msg_id': mid,
-                                        'ema_status': ema_status,
-                                        'category': category,
-                                        'eth_ema_status': eth_ema_status,
-                                        'entry_time': signal_time,
-                                        'entry_price': entry_price
-                                    }
-                                    open_trades[symbol] = trade
-                                    save_trades()
-                                break
+                next_close = get_next_candle_close()
+                wait_time = max(0, next_close - time.time())
+                time.sleep(wait_time)  # Wait until candle close to send alerts
+
+                # Collect pending alerts
+                while not alert_queue.empty():
+                    pending_alerts.append(alert_queue.get())
+
+                # Send TP/SL updates for closed trades
+                for sym, trade in list(open_trades.items()):
+                    if 'hit' in trade:
+                        edit_telegram_message(trade['msg_id'], trade['msg'])
+                        print(f"Sent TP/SL update for {sym} at {get_ist_time().strftime('%H:%M:%S')}")
+
+                # Process new trade alerts
+                for alert in pending_alerts:
+                    symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, side = alert
+                    if len(open_trades) < MAX_OPEN_TRADES:
+                        mid = send_telegram(msg)
+                        if mid and symbol not in open_trades:
+                            trade = {
+                                'side': side,
+                                'entry': float(msg.split('entry - ')[1].split('\n')[0]),
+                                'tp': float(msg.split('tp - ')[1].split('\n')[0]),
+                                'sl': float(msg.split('sl - ')[1].split('\n')[0]),
+                                'msg': msg,
+                                'msg_id': mid,
+                                'ema_status': ema_status,
+                                'category': category,
+                                'eth_ema_status': eth_ema_status,
+                                'entry_time': signal_time,
+                                'entry_price': entry_price
+                            }
+                            open_trades[symbol] = trade
+                            save_trades()
+                            print(f"Sent trade alert for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
                     else:
-                        print(f"Max open trades ({MAX_OPEN_TRADES}) reached, rejecting {symbol} (low priority)")
-                alert_queue.task_done()
-            except queue.Empty:
-                continue
+                        lowest_priority = min(
+                            (CATEGORY_PRIORITY[trade['category']] for trade in open_trades.values()),
+                            default=0
+                        )
+                        if CATEGORY_PRIORITY[category] > lowest_priority:
+                            for sym, trade in list(open_trades.items()):
+                                if CATEGORY_PRIORITY[trade['category']] == lowest_priority:
+                                    edit_telegram_message(
+                                        trade['msg_id'],
+                                        f"{sym} - Trade canceled to prioritize higher-quality signal."
+                                    )
+                                    del open_trades[sym]
+                                    save_trades()
+                                    mid = send_telegram(msg)
+                                    if mid and symbol not in open_trades:
+                                        trade = {
+                                            'side': side,
+                                            'entry': float(msg.split('entry - ')[1].split('\n')[0]),
+                                            'tp': float(msg.split('tp - ')[1].split('\n')[0]),
+                                            'sl': float(msg.split('sl - ')[1].split('\n')[0]),
+                                            'msg': msg,
+                                            'msg_id': mid,
+                                            'ema_status': ema_status,
+                                            'category': category,
+                                            'eth_ema_status': eth_ema_status,
+                                            'entry_time': signal_time,
+                                            'entry_price': entry_price
+                                        }
+                                        open_trades[symbol] = trade
+                                        save_trades()
+                                        print(f"Sent trade alert for {symbol} (replaced lower priority) at {get_ist_time().strftime('%H:%M:%S')}")
+                                    break
+                        else:
+                            print(f"Max open trades ({MAX_OPEN_TRADES}) reached, rejecting {symbol} (low priority)")
+
+                # Send summary after processing alerts
+                all_closed_trades = load_closed_trades()
+                two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
+                one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
+                two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
+
+                def get_category_metrics(trades):
+                    count = len(trades)
+                    wins = sum(1 for t in trades if t['pnl'] > 0)
+                    losses = sum(1 for t in trades if t['pnl'] < 0)
+                    pnl = sum(t['pnl'] for t in trades)
+                    pnl_pct = sum(t['pnl_pct'] for t in trades)
+                    win_rate = (wins / count * 100) if count > 0 else 0.00
+                    eth_good_trades = [t for t in trades if t['eth_ema_status'] == '✅']
+                    eth_cautious_trades = [t for t in trades if t['eth_ema_status'] == '⚠️']
+                    eth_good_tp = sum(1 for t in eth_good_trades if t['pnl'] > 0)
+                    eth_good_sl = sum(1 for t in eth_good_trades if t['pnl'] < 0)
+                    eth_cautious_tp = sum(1 for t in eth_cautious_trades if t['pnl'] > 0)
+                    eth_cautious_sl = sum(1 for t in eth_cautious_trades if t['pnl'] < 0)
+                    return count, wins, losses, pnl, pnl_pct, win_rate, eth_good_tp, eth_good_sl, eth_cautious_tp, eth_cautious_sl
+
+                two_green_metrics = get_category_metrics(two_green_trades)
+                one_green_metrics = get_category_metrics(one_green_trades)
+                two_cautions_metrics = get_category_metrics(two_cautions_trades)
+
+                two_green_count, two_green_wins, two_green_losses, two_green_pnl, two_green_pnl_pct, two_green_win_rate, two_green_eth_good_tp, two_green_eth_good_sl, two_green_eth_cautious_tp, two_green_eth_cautious_sl = two_green_metrics
+                one_green_count, one_green_wins, one_green_losses, one_green_pnl, one_green_pnl_pct, one_green_win_rate, one_green_eth_good_tp, one_green_eth_good_sl, one_green_eth_cautious_tp, one_green_eth_cautious_sl = one_green_metrics
+                two_cautions_count, two_cautions_wins, two_cautions_losses, two_cautions_pnl, two_cautions_pnl_pct, two_cautions_win_rate, two_cautions_eth_good_tp, two_cautions_eth_good_sl, two_cautions_eth_cautious_tp, two_cautions_eth_cautious_sl = two_cautions_metrics
+
+                total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
+                total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
+                cumulative_pnl = total_pnl
+                cumulative_pnl_pct = total_pnl_pct
+
+                eth_price_change = 0.0
+                eth_start_price = None
+                eth_end_price = None
+                if all_closed_trades:
+                    try:
+                        earliest_time = min(t['entry_time'] for t in all_closed_trades)
+                        latest_time = max(t['entry_time'] for t in all_closed_trades)
+                        eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, since=int(earliest_time), limit=1000)
+                        eth_start_price = next((c[4] for c in eth_candles if c[0] >= earliest_time), None)
+                        eth_end_price = next((c[4] for c in reversed(eth_candles) if c[0] <= latest_time), None)
+                        if eth_start_price and eth_end_price:
+                            eth_price_change = (eth_end_price - eth_start_price) / eth_start_price * 100
+                    except Exception as e:
+                        print(f"Error calculating ETH/USDT price change: {e}")
+
+                if all_closed_trades:
+                    symbol_pnl = {}
+                    for trade in all_closed_trades:
+                        sym = trade['symbol']
+                        symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
+                    top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
+                    top_symbol_name, top_symbol_pnl = top_symbol
+                    top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name)
+                else:
+                    top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
+
+                timestamp = get_ist_time().strftime("%I:%M %p IST, %B %d, %Y")
+                summary_msg = (
+                    f"🔍 Scan Completed at {timestamp}\n"
+                    f"📊 Trade Summary (Closed Trades):\n"
+                    f"- ✅✅ Two Green Ticks: {two_green_count} trades (Wins: {two_green_wins}, Losses: {two_green_losses}), PnL: ${two_green_pnl:.2f} ({two_green_pnl_pct:.2f}%), Win Rate: {two_green_win_rate:.2f}%\n"
+                    f"  - ETH/USDT Good to Buy/Sell: {two_green_eth_good_tp + two_green_eth_good_sl} trades (TP: {two_green_eth_good_tp}, SL: {two_green_eth_good_sl})\n"
+                    f"  - ETH/USDT Cautious: {two_green_eth_cautious_tp + two_green_eth_cautious_sl} trades (TP: {two_green_eth_cautious_tp}, SL: {two_green_eth_cautious_sl})\n"
+                    f"- ✅⚠️ One Green, One Caution: {one_green_count} trades (Wins: {one_green_wins}, Losses: {one_green_losses}), PnL: ${one_green_pnl:.2f} ({one_green_pnl_pct:.2f}%), Win Rate: {one_green_win_rate:.2f}%\n"
+                    f"  - ETH/USDT Good to Buy/Sell: {one_green_eth_good_tp + one_green_eth_good_sl} trades (TP: {one_green_eth_good_tp}, SL: {one_green_eth_good_sl})\n"
+                    f"  - ETH/USDT Cautious: {one_green_eth_cautious_tp + one_green_eth_cautious_sl} trades (TP: {one_green_eth_cautious_tp}, SL: {one_green_eth_cautious_sl})\n"
+                    f"- ⚠️⚠️ Two Cautions: {two_cautions_count} trades (Wins: {two_cautions_wins}, Losses: {two_cautions_losses}), PnL: ${two_cautions_pnl:.2f} ({two_cautions_pnl_pct:.2f}%), Win Rate: {two_cautions_win_rate:.2f}%\n"
+                    f"  - ETH/USDT Good to Buy/Sell: {two_cautions_eth_good_tp + two_cautions_eth_good_sl} trades (TP: {two_cautions_eth_good_tp}, SL: {two_cautions_eth_good_sl})\n"
+                    f"  - ETH/USDT Cautious: {two_cautions_eth_cautious_tp + two_cautions_eth_cautious_sl} trades (TP: {two_cautions_eth_cautious_tp}, SL: {two_cautions_eth_cautious_sl})\n"
+                    f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
+                    f"📈 Cumulative PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
+                    f"🏆 Top Symbol: {top_symbol_name or 'None'} with ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
+                    f"🔄 Open Trades: {len(open_trades)}\n"
+                    f"📊 ETH/USDT Performance: Price change {eth_price_change:+.2f}%"
+                    f"{f' (from ${eth_start_price:.2f} to ${eth_end_price:.2f})' if eth_start_price and eth_end_price else ''}"
+                )
+                send_telegram(summary_msg)
+                send_telegram(f"Number of open trades after scan: {len(open_trades)}")
+                print(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
+                closed_trades = []
+                pending_alerts = []  # Clear pending alerts after processing
             except Exception as e:
                 print(f"Alert thread error: {e}")
                 time.sleep(1)
@@ -440,110 +545,15 @@ def scan_loop():
     while True:
         next_close = get_next_candle_close()
         wait_time = max(0, next_close - time.time())
-        print(f"⏳ Waiting {wait_time:.1f} seconds for next 15m candle close...")
+        print(f"⏳ Waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
         time.sleep(wait_time)
-
+        print(f"Starting scan at {get_ist_time().strftime('%H:%M:%S')}")
         for i, chunk in enumerate(symbol_chunks):
             print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
             process_batch(chunk, alert_queue)
             if i < NUM_CHUNKS - 1:
                 time.sleep(BATCH_DELAY)
-
-        print("✅ Scan complete.")
-        num_open = len(open_trades)
-        print(f"📊 Number of open trades: {num_open}")
-
-        # Load all closed trades for cumulative summary
-        all_closed_trades = load_closed_trades()
-
-        # Compile PnL summary
-        two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
-        one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
-        two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
-
-        # Calculate metrics for each category
-        def get_category_metrics(trades):
-            count = len(trades)
-            wins = sum(1 for t in trades if t['pnl'] > 0)
-            losses = sum(1 for t in trades if t['pnl'] < 0)
-            pnl = sum(t['pnl'] for t in trades)
-            pnl_pct = sum(t['pnl_pct'] for t in trades)
-            win_rate = (wins / count * 100) if count > 0 else 0.00
-            eth_good_trades = [t for t in trades if t['eth_ema_status'] == '✅']
-            eth_cautious_trades = [t for t in trades if t['eth_ema_status'] == '⚠️']
-            eth_good_tp = sum(1 for t in eth_good_trades if t['pnl'] > 0)
-            eth_good_sl = sum(1 for t in eth_good_trades if t['pnl'] < 0)
-            eth_cautious_tp = sum(1 for t in eth_cautious_trades if t['pnl'] > 0)
-            eth_cautious_sl = sum(1 for t in eth_cautious_trades if t['pnl'] < 0)
-            return count, wins, losses, pnl, pnl_pct, win_rate, eth_good_tp, eth_good_sl, eth_cautious_tp, eth_cautious_sl
-
-        two_green_metrics = get_category_metrics(two_green_trades)
-        one_green_metrics = get_category_metrics(one_green_trades)
-        two_cautions_metrics = get_category_metrics(two_cautions_trades)
-
-        two_green_count, two_green_wins, two_green_losses, two_green_pnl, two_green_pnl_pct, two_green_win_rate, two_green_eth_good_tp, two_green_eth_good_sl, two_green_eth_cautious_tp, two_green_eth_cautious_sl = two_green_metrics
-        one_green_count, one_green_wins, one_green_losses, one_green_pnl, one_green_pnl_pct, one_green_win_rate, one_green_eth_good_tp, one_green_eth_good_sl, one_green_eth_cautious_tp, one_green_eth_cautious_sl = one_green_metrics
-        two_cautions_count, two_cautions_wins, two_cautions_losses, two_cautions_pnl, two_cautions_pnl_pct, two_cautions_win_rate, two_cautions_eth_good_tp, two_cautions_eth_good_sl, two_cautions_eth_cautious_tp, two_cautions_eth_cautious_sl = two_cautions_metrics
-
-        total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
-        total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
-        cumulative_pnl = total_pnl
-        cumulative_pnl_pct = total_pnl_pct
-
-        # Calculate ETH/USDT price change
-        eth_price_change = 0.0
-        eth_start_price = None
-        eth_end_price = None
-        if all_closed_trades:
-            try:
-                earliest_time = min(t['entry_time'] for t in all_closed_trades)
-                latest_time = max(t['entry_time'] for t in all_closed_trades)
-                eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, since=int(earliest_time), limit=1000)
-                eth_start_price = next((c[4] for c in eth_candles if c[0] >= earliest_time), None)
-                eth_end_price = next((c[4] for c in reversed(eth_candles) if c[0] <= latest_time), None)
-                if eth_start_price and eth_end_price:
-                    eth_price_change = (eth_end_price - eth_start_price) / eth_start_price * 100
-            except Exception as e:
-                print(f"Error calculating ETH/USDT price change: {e}")
-
-        # Find top symbol
-        if all_closed_trades:
-            symbol_pnl = {}
-            for trade in all_closed_trades:
-                sym = trade['symbol']
-                symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
-            top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
-            top_symbol_name, top_symbol_pnl = top_symbol
-            top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name)
-        else:
-            top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
-
-        # Format Telegram message
-        timestamp = get_ist_time().strftime("%I:%M %p IST, %B %d, %Y")
-        summary_msg = (
-            f"🔍 Scan Completed at {timestamp}\n"
-            f"📊 Trade Summary (Closed Trades):\n"
-            f"- ✅✅ Two Green Ticks: {two_green_count} trades (Wins: {two_green_wins}, Losses: {two_green_losses}), PnL: ${two_green_pnl:.2f} ({two_green_pnl_pct:.2f}%), Win Rate: {two_green_win_rate:.2f}%\n"
-            f"  - ETH/USDT Good to Buy/Sell: {two_green_eth_good_tp + two_green_eth_good_sl} trades (TP: {two_green_eth_good_tp}, SL: {two_green_eth_good_sl})\n"
-            f"  - ETH/USDT Cautious: {two_green_eth_cautious_tp + two_green_eth_cautious_sl} trades (TP: {two_green_eth_cautious_tp}, SL: {two_green_eth_cautious_sl})\n"
-            f"- ✅⚠️ One Green, One Caution: {one_green_count} trades (Wins: {one_green_wins}, Losses: {one_green_losses}), PnL: ${one_green_pnl:.2f} ({one_green_pnl_pct:.2f}%), Win Rate: {one_green_win_rate:.2f}%\n"
-            f"  - ETH/USDT Good to Buy/Sell: {one_green_eth_good_tp + one_green_eth_good_sl} trades (TP: {one_green_eth_good_tp}, SL: {one_green_eth_good_sl})\n"
-            f"  - ETH/USDT Cautious: {one_green_eth_cautious_tp + one_green_eth_cautious_sl} trades (TP: {one_green_eth_cautious_tp}, SL: {one_green_eth_cautious_sl})\n"
-            f"- ⚠️⚠️ Two Cautions: {two_cautions_count} trades (Wins: {two_cautions_wins}, Losses: {two_cautions_losses}), PnL: ${two_cautions_pnl:.2f} ({two_cautions_pnl_pct:.2f}%), Win Rate: {two_cautions_win_rate:.2f}%\n"
-            f"  - ETH/USDT Good to Buy/Sell: {two_cautions_eth_good_tp + two_cautions_eth_good_sl} trades (TP: {two_cautions_eth_good_tp}, SL: {two_cautions_eth_good_sl})\n"
-            f"  - ETH/USDT Cautious: {two_cautions_eth_cautious_tp + two_cautions_eth_cautious_sl} trades (TP: {two_cautions_eth_cautious_tp}, SL: {two_cautions_eth_cautious_sl})\n"
-            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
-            f"📈 Cumulative PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
-            f"🏆 Top Symbol: {top_symbol_name or 'None'} with ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
-            f"🔄 Open Trades: {num_open}\n"
-            f"📊 ETH/USDT Performance: Price change {eth_price_change:+.2f}%"
-            f"{f' (from ${eth_start_price:.2f} to ${eth_end_price:.2f})' if eth_start_price and eth_end_price else ''}"
-        )
-        send_telegram(summary_msg)
-        send_telegram(f"Number of open trades after scan: {num_open}")
-
-        # Reset closed_trades after generating the summary
-        closed_trades = []
+        print(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
 
 # === FLASK ===
 @app.route('/')
