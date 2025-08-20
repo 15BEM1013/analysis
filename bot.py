@@ -34,10 +34,10 @@ CATEGORY_PRIORITY = {
 }
 
 # === PROXY CONFIGURATION ===
-PROXY_HOST = '207.244.217.165'
-PROXY_PORT = '6712'
-PROXY_USERNAME = 'tytogvbu'
-PROXY_PASSWORD = 'wb64rnowfoby'
+PROXY_HOST = '23.95.150.145'
+PROXY_PORT = '6114'
+PROXY_USERNAME = 'swpvlbvt'
+PROXY_PASSWORD = '1p357wvgggm2'
 proxies = {
     "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
     "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
@@ -613,7 +613,7 @@ def scan_loop():
                     f"    Norm, ETH EMA9<21: {two_cautions_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9>21: {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9<21: {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                    f"    Buy Press, ETH EMA9>21: {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
+                    f"    Buy Press, ETH EMA9>21: {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Flying']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Buy Press, ETH EMA9<21: {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
                     f"📈 Cum. PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
