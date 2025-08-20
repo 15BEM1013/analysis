@@ -10,6 +10,11 @@ import math
 import queue
 import json
 import os
+import logging
+
+# === LOGGING SETUP ===
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
@@ -34,8 +39,8 @@ CATEGORY_PRIORITY = {
 }
 
 # === PROXY CONFIGURATION ===
-PROXY_HOST = '142.147.128.93'
-PROXY_PORT = '6593'
+PROXY_HOST = '216.10.27.159'
+PROXY_PORT = '6837'
 PROXY_USERNAME = 'swpvlbvt'
 PROXY_PASSWORD = '1p357wvgggm2'
 proxies = {
@@ -53,9 +58,9 @@ def save_trades():
     try:
         with open(TRADE_FILE, 'w') as f:
             json.dump(open_trades, f, default=str)
-        print(f"Trades saved to {TRADE_FILE}")
+        logger.info(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
-        print(f"Error saving trades: {e}")
+        logger.error(f"Error saving trades: {e}")
 
 def load_trades():
     global open_trades
@@ -64,9 +69,9 @@ def load_trades():
             with open(TRADE_FILE, 'r') as f:
                 loaded = json.load(f)
                 open_trades = {k: v for k, v in loaded.items()}
-            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+            logger.info(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
     except Exception as e:
-        print(f"Error loading trades: {e}")
+        logger.error(f"Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
@@ -78,9 +83,9 @@ def save_closed_trades(closed_trade):
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
             json.dump(all_closed_trades, f, default=str)
-        print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
+        logger.info(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
-        print(f"Error saving closed trades: {e}")
+        logger.error(f"Error saving closed trades: {e}")
 
 def load_closed_trades():
     try:
@@ -89,7 +94,7 @@ def load_closed_trades():
                 return json.load(f)
         return []
     except Exception as e:
-        print(f"Error loading closed trades: {e}")
+        logger.error(f"Error loading closed trades: {e}")
         return []
 
 # === TELEGRAM ===
@@ -98,10 +103,10 @@ def send_telegram(msg):
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
         response = requests.post(url, data=data, timeout=5).json()
-        print(f"Telegram sent: {msg}")
+        logger.info(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
-        print(f"Telegram error: {e}")
+        logger.error(f"Telegram error: {e}")
         return None
 
 def edit_telegram_message(message_id, new_text):
@@ -109,9 +114,9 @@ def edit_telegram_message(message_id, new_text):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
         requests.post(url, data=data, timeout=5)
-        print(f"Telegram updated: {new_text}")
+        logger.info(f"Telegram updated: {new_text}")
     except Exception as e:
-        print(f"Edit error: {e}")
+        logger.error(f"Edit error: {e}")
 
 # === INIT ===
 exchange = ccxt.binance({
@@ -157,7 +162,7 @@ def round_price(symbol, price):
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
     except Exception as e:
-        print(f"Error rounding price for {symbol}: {e}")
+        logger.error(f"Error rounding price for {symbol}: {e}")
         return price
 
 # === WICK ANALYSIS ===
@@ -207,8 +212,12 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    markets = exchange.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    try:
+        markets = exchange.load_markets()
+        return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    except Exception as e:
+        logger.error(f"Error loading markets: {e}")
+        return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -226,7 +235,7 @@ def check_tp_sl():
         try:
             next_close = get_next_candle_close()
             wait_time = max(0, next_close - time.time())
-            print(f"⏳ TP/SL waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
+            logger.info(f"TP/SL waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
             time.sleep(wait_time)
 
             for sym, trade in list(open_trades.items()):
@@ -284,28 +293,32 @@ def check_tp_sl():
                         del open_trades[sym]
                         save_trades()
                 except Exception as e:
-                    print(f"TP/SL check error on {sym}: {e}")
+                    logger.error(f"TP/SL check error on {sym}: {e}")
         except Exception as e:
-            print(f"TP/SL loop error: {e}")
+            logger.error(f"TP/SL loop error: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
     try:
+        start_time = time.time()
         for attempt in range(3):
             candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
             eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, limit=30)
             if len(candles) < 25 or len(eth_candles) < 25:
+                logger.warning(f"Insufficient candle data for {symbol}")
                 return
             if attempt < 2 and candles[-1][0] > candles[-2][0]:
                 break
             time.sleep(1)
+        logger.info(f"API response time for {symbol}: {time.time() - start_time:.2f} seconds")
 
         ema21 = calculate_ema(candles, period=21)
         ema9 = calculate_ema(candles, period=9)
         eth_ema21 = calculate_ema(eth_candles, period=21)
         eth_ema9 = calculate_ema(eth_candles, period=9)
         if ema21 is None or ema9 is None or eth_ema21 is None or eth_ema9 is None:
+            logger.warning(f"EMA calculation failed for {symbol}")
             return
 
         signal_time = candles[-2][0]
@@ -380,23 +393,29 @@ def process_symbol(symbol, alert_queue):
             alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'sell', body_size_pct, wick_analysis))
 
     except ccxt.RateLimitExceeded:
+        logger.warning(f"Rate limit exceeded for {symbol}, retrying after 5 seconds")
         time.sleep(5)
+    except ccxt.BaseError as e:
+        logger.error(f"Binance API error on {symbol}: {str(e)}")
     except Exception as e:
-        print(f"Error on {symbol}: {e}")
+        logger.error(f"Unexpected error on {symbol}: {e}")
 
 # === PROCESS BATCH ===
 def process_batch(symbols, alert_queue):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
         for future in as_completed(future_to_symbol):
-            future.result()
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"Batch processing error for {future_to_symbol[future]}: {e}")
 
 # === SCAN LOOP ===
 def scan_loop():
     global closed_trades
     load_trades()
     symbols = get_symbols()
-    print(f"🔍 Scanning {len(symbols)} Binance Futures symbols...")
+    logger.info(f"Scanning {len(symbols)} Binance Futures symbols...")
     alert_queue = queue.Queue()
 
     chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
@@ -459,7 +478,7 @@ def scan_loop():
                 for sym, trade in list(open_trades.items()):
                     if 'hit' in trade:
                         edit_telegram_message(trade['msg_id'], trade['msg'])
-                        print(f"Sent TP/SL update for {sym} at {get_ist_time().strftime('%H:%M:%S')}")
+                        logger.info(f"Sent TP/SL update for {sym} at {get_ist_time().strftime('%H:%M:%S')}")
 
                 for alert in pending_alerts:
                     symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, side, body_size_pct, wick_analysis = alert
@@ -483,7 +502,7 @@ def scan_loop():
                             }
                             open_trades[symbol] = trade
                             save_trades()
-                            print(f"Sent trade alert for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
+                            logger.info(f"Sent trade alert for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
                     else:
                         lowest_priority = min(
                             (CATEGORY_PRIORITY[trade['category']] for trade in open_trades.values()),
@@ -517,10 +536,10 @@ def scan_loop():
                                         }
                                         open_trades[symbol] = trade
                                         save_trades()
-                                        print(f"Sent trade alert for {symbol} (replaced lower priority) at {get_ist_time().strftime('%H:%M:%S')}")
+                                        logger.info(f"Sent trade alert for {symbol} (replaced lower priority) at {get_ist_time().strftime('%H:%M:%S')}")
                                     break
                         else:
-                            print(f"Max open trades ({MAX_OPEN_TRADES}) reached, rejecting {symbol} (low priority)")
+                            logger.info(f"Max open trades ({MAX_OPEN_TRADES}) reached, rejecting {symbol} (low priority)")
 
                 all_closed_trades = load_closed_trades()
                 two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
@@ -553,7 +572,7 @@ def scan_loop():
                         if eth_start_price and eth_end_price:
                             eth_price_change = (eth_end_price - eth_start_price) / eth_start_price * 100
                     except Exception as e:
-                        print(f"Error calculating ETH/USDT price change: {e}")
+                        logger.error(f"Error calculating ETH/USDT price change: {e}")
 
                 if all_closed_trades:
                     symbol_pnl = {}
@@ -624,33 +643,49 @@ def scan_loop():
                 )
                 send_telegram(summary_msg)
                 send_telegram(f"Open trades after scan: {len(open_trades)}")
-                print(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
+                logger.info(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
                 closed_trades = []
                 pending_alerts = []
             except Exception as e:
-                print(f"Alert thread error: {e}")
+                logger.error(f"Alert thread error: {e}")
                 time.sleep(1)
 
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp_sl, daemon=True).start()
 
     while True:
-        next_close = get_next_candle_close()
-        wait_time = max(0, next_close - time.time())
-        print(f"⏳ Waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
-        time.sleep(wait_time)
-        print(f"Starting scan at {get_ist_time().strftime('%H:%M:%S')}")
-        for i, chunk in enumerate(symbol_chunks):
-            print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
-            process_batch(chunk, alert_queue)
-            if i < NUM_CHUNKS - 1:
-                time.sleep(BATCH_DELAY)
-        print(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
+        try:
+            next_close = get_next_candle_close()
+            wait_time = max(0, next_close - time.time())
+            logger.info(f"Waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
+            time.sleep(wait_time)
+            logger.info(f"Starting scan at {get_ist_time().strftime('%H:%M:%S')}")
+            for i, chunk in enumerate(symbol_chunks):
+                logger.info(f"Processing batch {i+1}/{NUM_CHUNKS}...")
+                process_batch(chunk, alert_queue)
+                if i < NUM_CHUNKS - 1:
+                    time.sleep(BATCH_DELAY)
+            logger.info(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
+        except Exception as e:
+            logger.error(f"Scan loop error: {e}")
+            time.sleep(5)
 
 # === FLASK ===
 @app.route('/')
 def home():
     return "✅ Rising & Falling Three Pattern Bot is Live!"
+
+@app.route('/test_proxy')
+def test_proxy():
+    try:
+        start_time = time.time()
+        response = requests.get('https://api.binance.com/api/v3/exchangeInfo', proxies=proxies, timeout=5)
+        latency = time.time() - start_time
+        logger.info(f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds")
+        return f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds"
+    except Exception as e:
+        logger.error(f"Proxy test failed: {str(e)}")
+        return f"Proxy test failed: {str(e)}"
 
 # === RUN ===
 def run_bot():
