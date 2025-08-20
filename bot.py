@@ -34,10 +34,10 @@ CATEGORY_PRIORITY = {
 }
 
 # === PROXY CONFIGURATION ===
-PROXY_HOST = '207.244.217.165'
-PROXY_PORT = '6712'
-PROXY_USERNAME = 'tytogvbu'
-PROXY_PASSWORD = 'wb64rnowfoby'
+PROXY_HOST = '136.0.207.84'
+PROXY_PORT = '6661'
+PROXY_USERNAME = 'swpvlbvt'
+PROXY_PASSWORD = '1p357wvgggm2'
 proxies = {
     "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
     "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
@@ -594,7 +594,7 @@ def scan_loop():
                     f"    Buy Press, ETH EMA9>21: {one_green_details['Rising']['Buy Press, ETH EMA9>21']['count']} (TP-{one_green_details['Rising']['Buy Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Rising']['Buy Press, ETH EMA9>21']['sl']}, ${one_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Buy Press, ETH EMA9<21: {one_green_details['Rising']['Buy Press, ETH EMA9<21']['count']} (TP-{one_green_details['Rising']['Buy Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Rising']['Buy Press, ETH EMA9<21']['sl']}, ${one_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"  Falling:\n"
-                    f"    Norm, ETH EMA9>21: {one_green_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
+                    f"    Norm, ETH EMA9>21: {one_green_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"    Norm, ETH EMA9<21: {one_green_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9>21: {one_green_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9<21: {one_green_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
