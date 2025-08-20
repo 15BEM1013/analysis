@@ -39,14 +39,24 @@ CATEGORY_PRIORITY = {
 }
 
 # === PROXY CONFIGURATION ===
-PROXY_HOST = '216.10.27.159'
-PROXY_PORT = '6837'
+PROXIES = [
+    {"host": "64.137.96.74", "port": "6641"},  # Bloomingdale, IL
+    {"host": "45.38.107.97", "port": "6014"},  # Bloomingdale, IL
+    {"host": "107.172.163.27", "port": "6543"}  # London, UK
+]
 PROXY_USERNAME = 'swpvlbvt'
 PROXY_PASSWORD = '1p357wvgggm2'
-proxies = {
-    "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
-    "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-}
+
+def get_proxy(index):
+    proxy = PROXIES[index % len(PROXIES)]
+    return {
+        "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{proxy['host']}:{proxy['port']}",
+        "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{proxy['host']}:{proxy['port']}"
+    }
+
+# Initialize with first proxy
+proxy_index = 0
+proxies = get_proxy(proxy_index)
 
 # === TIME ZONE HELPER ===
 def get_ist_time():
@@ -212,12 +222,18 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    try:
-        markets = exchange.load_markets()
-        return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
-    except Exception as e:
-        logger.error(f"Error loading markets: {e}")
-        return []
+    global proxy_index
+    for attempt in range(3):
+        try:
+            markets = exchange.load_markets()
+            return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+        except ccxt.BaseError as e:
+            logger.error(f"Error loading markets with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {e}")
+            proxy_index += 1
+            exchange.proxies = get_proxy(proxy_index)
+            time.sleep(2)
+    logger.error("Failed to load markets after 3 attempts")
+    return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -230,7 +246,7 @@ def get_next_candle_close():
 
 # === TP/SL CHECK ===
 def check_tp_sl():
-    global closed_trades
+    global closed_trades, proxy_index
     while True:
         try:
             next_close = get_next_candle_close()
@@ -292,25 +308,36 @@ def check_tp_sl():
                         edit_telegram_message(trade['msg_id'], new_msg)
                         del open_trades[sym]
                         save_trades()
+                except ccxt.BaseError as e:
+                    logger.error(f"TP/SL check error on {sym} with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {e}")
+                    proxy_index += 1
+                    exchange.proxies = get_proxy(proxy_index)
                 except Exception as e:
-                    logger.error(f"TP/SL check error on {sym}: {e}")
+                    logger.error(f"Unexpected TP/SL check error on {sym}: {e}")
         except Exception as e:
             logger.error(f"TP/SL loop error: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
+    global proxy_index
     try:
         start_time = time.time()
         for attempt in range(3):
-            candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
-            eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, limit=30)
-            if len(candles) < 25 or len(eth_candles) < 25:
-                logger.warning(f"Insufficient candle data for {symbol}")
-                return
-            if attempt < 2 and candles[-1][0] > candles[-2][0]:
-                break
-            time.sleep(1)
+            try:
+                candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
+                eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, limit=30)
+                if len(candles) < 25 or len(eth_candles) < 25:
+                    logger.warning(f"Insufficient candle data for {symbol}")
+                    return
+                if attempt < 2 and candles[-1][0] > candles[-2][0]:
+                    break
+                time.sleep(1)
+            except ccxt.BaseError as e:
+                logger.error(f"Error fetching OHLCV for {symbol} with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {e}")
+                proxy_index += 1
+                exchange.proxies = get_proxy(proxy_index)
+                continue
         logger.info(f"API response time for {symbol}: {time.time() - start_time:.2f} seconds")
 
         ema21 = calculate_ema(candles, period=21)
@@ -396,7 +423,9 @@ def process_symbol(symbol, alert_queue):
         logger.warning(f"Rate limit exceeded for {symbol}, retrying after 5 seconds")
         time.sleep(5)
     except ccxt.BaseError as e:
-        logger.error(f"Binance API error on {symbol}: {str(e)}")
+        logger.error(f"Binance API error on {symbol} with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {e}")
+        proxy_index += 1
+        exchange.proxies = get_proxy(proxy_index)
     except Exception as e:
         logger.error(f"Unexpected error on {symbol}: {e}")
 
@@ -412,7 +441,7 @@ def process_batch(symbols, alert_queue):
 
 # === SCAN LOOP ===
 def scan_loop():
-    global closed_trades
+    global closed_trades, proxy_index
     load_trades()
     symbols = get_symbols()
     logger.info(f"Scanning {len(symbols)} Binance Futures symbols...")
@@ -572,7 +601,9 @@ def scan_loop():
                         if eth_start_price and eth_end_price:
                             eth_price_change = (eth_end_price - eth_start_price) / eth_start_price * 100
                     except Exception as e:
-                        logger.error(f"Error calculating ETH/USDT price change: {e}")
+                        logger.error(f"Error calculating ETH/USDT price change with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {e}")
+                        proxy_index += 1
+                        exchange.proxies = get_proxy(proxy_index)
 
                 if all_closed_trades:
                     symbol_pnl = {}
@@ -648,6 +679,8 @@ def scan_loop():
                 pending_alerts = []
             except Exception as e:
                 logger.error(f"Alert thread error: {e}")
+                proxy_index += 1
+                exchange.proxies = get_proxy(proxy_index)
                 time.sleep(1)
 
     threading.Thread(target=send_alerts, daemon=True).start()
@@ -668,6 +701,8 @@ def scan_loop():
             logger.info(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
         except Exception as e:
             logger.error(f"Scan loop error: {e}")
+            proxy_index += 1
+            exchange.proxies = get_proxy(proxy_index)
             time.sleep(5)
 
 # === FLASK ===
@@ -677,21 +712,24 @@ def home():
 
 @app.route('/test_proxy')
 def test_proxy():
+    global proxy_index
     try:
         start_time = time.time()
         response = requests.get('https://api.binance.com/api/v3/exchangeInfo', proxies=proxies, timeout=5)
         latency = time.time() - start_time
-        logger.info(f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds")
-        return f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds"
+        logger.info(f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds, Proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}")
+        return f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds, Proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
     except Exception as e:
-        logger.error(f"Proxy test failed: {str(e)}")
-        return f"Proxy test failed: {str(e)}"
+        logger.error(f"Proxy test failed with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {str(e)}")
+        proxy_index += 1
+        exchange.proxies = get_proxy(proxy_index)
+        return f"Proxy test failed: {str(e)}, switched to proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
 
 # === RUN ===
 def run_bot():
     load_trades()
     num_open = len(open_trades)
-    startup_msg = f"BOT STARTED\nOpen trades: {num_open}"
+    startup_msg = f"BOT STARTED\nOpen trades: {num_open}\nProxy: {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
     send_telegram(startup_msg)
     threading.Thread(target=scan_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
