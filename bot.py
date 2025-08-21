@@ -10,6 +10,7 @@ import math
 import queue
 import json
 import os
+import random
 
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
@@ -28,14 +29,52 @@ TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 
 # === PROXY CONFIGURATION ===
-PROXY_HOST = '207.244.217.165'
-PROXY_PORT = '6712'
-PROXY_USERNAME = 'tytogvbu'
-PROXY_PASSWORD = 'wb64rnowfoby'
-proxies = {
-    "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
-    "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-}
+PROXY_LIST = [
+    {
+        'host': '23.95.150.145',
+        'port': '6114',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '198.23.239.134',
+        'port': '6540',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '45.38.107.97',
+        'port': '6014',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '107.172.163.27',
+        'port': '6543',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '64.137.96.74',
+        'port': '6641',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '45.43.186.39',
+        'port': '6257',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    }
+]
+
+# Function to get a random proxy
+def get_random_proxy():
+    proxy = random.choice(PROXY_LIST)
+    return {
+        "http": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
+        "https": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+    }
 
 # === TIME ZONE HELPER ===
 def get_ist_time():
@@ -91,28 +130,65 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
-        response = requests.post(url, data=data, timeout=5).json()
+        # Use a random proxy for Telegram
+        proxies = get_random_proxy()
+        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
         print(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
         print(f"Telegram error: {e}")
-        return None
+        # Try without proxy if proxy fails
+        try:
+            response = requests.post(url, data=data, timeout=5).json()
+            print(f"Telegram sent (no proxy): {msg}")
+            return response.get('result', {}).get('message_id')
+        except Exception as e2:
+            print(f"Telegram error without proxy: {e2}")
+            return None
 
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
-        requests.post(url, data=data, timeout=5)
+        # Use a random proxy for Telegram
+        proxies = get_random_proxy()
+        requests.post(url, data=data, proxies=proxies, timeout=5)
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
+        # Try without proxy if proxy fails
+        try:
+            requests.post(url, data=data, timeout=5)
+            print(f"Telegram updated (no proxy): {new_text}")
+        except Exception as e2:
+            print(f"Edit error without proxy: {e2}")
 
 # === INIT ===
-exchange = ccxt.binance({
-    'options': {'defaultType': 'future'},
-    'proxies': proxies,
-    'enableRateLimit': True
-})
+# We'll create exchange instances with different proxies
+def create_exchange_with_proxy(proxy_config=None):
+    if proxy_config:
+        proxies = {
+            "http": f"http://{proxy_config['username']}:{proxy_config['password']}@{proxy_config['host']}:{proxy_config['port']}",
+            "https": f"http://{proxy_config['username']}:{proxy_config['password']}@{proxy_config['host']}:{proxy_config['port']}"
+        }
+    else:
+        proxies = None
+    
+    return ccxt.binance({
+        'options': {'defaultType': 'future'},
+        'proxies': proxies,
+        'enableRateLimit': True
+    })
+
+# Create a list of exchange instances with different proxies
+exchange_instances = [create_exchange_with_proxy(proxy) for proxy in PROXY_LIST]
+# Add one instance without proxy as fallback
+exchange_instances.append(create_exchange_with_proxy())
+
+# Function to get a random exchange instance
+def get_exchange_instance():
+    return random.choice(exchange_instances)
+
 app = Flask(__name__)
 
 sent_signals = {}
@@ -174,8 +250,26 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    markets = exchange.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    # Try with different exchanges until we get the symbols
+    for exchange in exchange_instances:
+        try:
+            markets = exchange.load_markets()
+            symbols = [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+            if symbols:
+                return symbols
+        except Exception as e:
+            print(f"Error getting symbols with proxy: {e}")
+            continue
+    
+    # If all proxies fail, try without proxy
+    try:
+        exchange_no_proxy = create_exchange_with_proxy()
+        markets = exchange_no_proxy.load_markets()
+        symbols = [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+        return symbols
+    except Exception as e:
+        print(f"Error getting symbols without proxy: {e}")
+        return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -193,6 +287,8 @@ def check_tp_sl():
         try:
             for sym, trade in list(open_trades.items()):
                 try:
+                    # Use a random exchange instance
+                    exchange = get_exchange_instance()
                     ticker = exchange.fetch_ticker(sym)
                     last = ticker['last']
                     pnl = 0
@@ -245,6 +341,9 @@ def check_tp_sl():
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
     try:
+        # Use a random exchange instance
+        exchange = get_exchange_instance()
+        
         for attempt in range(3):
             candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
             if len(candles) < 25:
