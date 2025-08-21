@@ -42,10 +42,10 @@ CATEGORY_PRIORITY = {
 PROXIES = [
     {"host": "64.137.96.74", "port": "6641"},  # Bloomingdale, IL
     {"host": "45.38.107.97", "port": "6014"},  # Bloomingdale, IL
-    {"host": "216.10.27.159", "port": "6837"}   # Chiyoda City, Japan
+    {"host": "107.172.163.27", "port": "6543"}  # London, UK
 ]
-PROXY_USERNAME = 'tytogvbu'
-PROXY_PASSWORD = 'wb64rnowfoby'
+PROXY_USERNAME = 'swpvlbvt'
+PROXY_PASSWORD = '1p357wvgggm2'
 
 def get_proxy(index):
     proxy = PROXIES[index % len(PROXIES)]
@@ -649,7 +649,7 @@ def scan_loop():
                     f"    Sell Press, ETH EMA9>21: {one_green_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9<21: {one_green_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"    Buy Press, ETH EMA9>21: {one_green_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                    f"    Buy Press, ETH EMA9<21: {one_green_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
+                    f"    Buy Press, ETH EMA9<21: {one_green_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"⚠️⚠️ Two Cautions ({two_cautions_count}, {two_cautions_wins}W/{two_cautions_losses}L, ${two_cautions_pnl:.2f}, {two_cautions_pnl_pct:.2f}%, {two_cautions_win_rate:.2f}%):\n"
                     f"  Rising:\n"
                     f"    Norm, ETH EMA9>21: {two_cautions_details['Rising']['Norm, ETH EMA9>21']['count']} (TP-{two_cautions_details['Rising']['Norm, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Rising']['Norm, ETH EMA9>21']['sl']}, ${two_cautions_details['Rising']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Rising']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
@@ -662,4 +662,77 @@ def scan_loop():
                     f"    Norm, ETH EMA9>21: {two_cautions_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
                     f"    Norm, ETH EMA9<21: {two_cautions_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
                     f"    Sell Press, ETH EMA9>21: {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                    f"    Sell Press, ETH EMA9<21: {two_cautions_details['Falling']['Sell Press, ETH EMA9
+                    f"    Sell Press, ETH EMA9<21: {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
+                    f"    Buy Press, ETH EMA9>21: {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
+                    f"    Buy Press, ETH EMA9<21: {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
+                    f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
+                    f"📈 Cum. PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
+                    f"🏆 Top: {top_symbol_name or 'None'}, ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
+                    f"🔄 Open: {len(open_trades)}\n"
+                    f"📊 ETH/USDT: {eth_price_change:+.2f}%"
+                    f"{f' (${eth_start_price:.2f}→${eth_end_price:.2f})' if eth_start_price and eth_end_price else ''}"
+                )
+                send_telegram(summary_msg)
+                send_telegram(f"Open trades after scan: {len(open_trades)}")
+                logger.info(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
+                closed_trades = []
+                pending_alerts = []
+            except Exception as e:
+                logger.error(f"Alert thread error: {e}")
+                proxy_index += 1
+                exchange.proxies = get_proxy(proxy_index)
+                time.sleep(1)
+
+    threading.Thread(target=send_alerts, daemon=True).start()
+    threading.Thread(target=check_tp_sl, daemon=True).start()
+
+    while True:
+        try:
+            next_close = get_next_candle_close()
+            wait_time = max(0, next_close - time.time())
+            logger.info(f"Waiting {wait_time:.1f} seconds for next 30m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
+            time.sleep(wait_time)
+            logger.info(f"Starting scan at {get_ist_time().strftime('%H:%M:%S')}")
+            for i, chunk in enumerate(symbol_chunks):
+                logger.info(f"Processing batch {i+1}/{NUM_CHUNKS}...")
+                process_batch(chunk, alert_queue)
+                if i < NUM_CHUNKS - 1:
+                    time.sleep(BATCH_DELAY)
+            logger.info(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
+        except Exception as e:
+            logger.error(f"Scan loop error: {e}")
+            proxy_index += 1
+            exchange.proxies = get_proxy(proxy_index)
+            time.sleep(5)
+
+# === FLASK ===
+@app.route('/')
+def home():
+    return "✅ Rising & Falling Three Pattern Bot is Live!"
+
+@app.route('/test_proxy')
+def test_proxy():
+    global proxy_index
+    try:
+        start_time = time.time()
+        response = requests.get('https://api.binance.com/api/v3/exchangeInfo', proxies=proxies, timeout=5)
+        latency = time.time() - start_time
+        logger.info(f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds, Proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}")
+        return f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds, Proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
+    except Exception as e:
+        logger.error(f"Proxy test failed with proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}: {str(e)}")
+        proxy_index += 1
+        exchange.proxies = get_proxy(proxy_index)
+        return f"Proxy test failed: {str(e)}, switched to proxy {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
+
+# === RUN ===
+def run_bot():
+    load_trades()
+    num_open = len(open_trades)
+    startup_msg = f"BOT STARTED\nOpen trades: {num_open}\nProxy: {PROXIES[proxy_index % len(PROXIES)]['host']}:{PROXIES[proxy_index % len(PROXIES)]['port']}"
+    send_telegram(startup_msg)
+    threading.Thread(target=scan_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=8080)
+
+if __name__ == "__main__":
+    run_bot()
