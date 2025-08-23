@@ -249,7 +249,7 @@ def detect_falling_three(candles):
     )
     small_green_0 = (
         is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
-        c0[4] < c2[2] - (c2[2] - c3]) * 0.3 and c0[5] < c2[5]
+        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
