@@ -57,8 +57,8 @@ def get_ist_time():
 def save_trades():
     try:
         with open(TRADE_FILE, 'w') as f:
-            json.dump(open_trades, f, default=str)
-        logger.info(f"Trades saved to {TRADE_FILE}")
+            json.dump(open_trades, f, default=str, indent=2)
+        logger.info(f"Trades saved to {TRADE_FILE}, total trades: {len(open_trades)}")
     except Exception as e:
         logger.error(f"Error saving trades: {e}")
 
@@ -80,10 +80,13 @@ def save_closed_trades(closed_trade):
         if os.path.exists(CLOSED_TRADE_FILE):
             with open(CLOSED_TRADE_FILE, 'r') as f:
                 all_closed_trades = json.load(f)
+        if not isinstance(all_closed_trades, list):
+            logger.warning(f"Resetting invalid closed_trades.json content")
+            all_closed_trades = []
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
-            json.dump(all_closed_trades, f, default=str)
-        logger.info(f"Closed trade saved to {CLOSED_TRADE_FILE}")
+            json.dump(all_closed_trades, f, default=str, indent=2)
+        logger.info(f"Closed trade saved to {CLOSED_TRADE_FILE}, total trades: {len(all_closed_trades)}")
     except Exception as e:
         logger.error(f"Error saving closed trades: {e}")
 
@@ -91,7 +94,14 @@ def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
             with open(CLOSED_TRADE_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, list):
+                    logger.info(f"Loaded {len(data)} closed trades from {CLOSED_TRADE_FILE}")
+                    return data
+                else:
+                    logger.error(f"Invalid data format in {CLOSED_TRADE_FILE}, expected a list")
+                    return []
+        logger.info(f"No closed trades file found at {CLOSED_TRADE_FILE}")
         return []
     except Exception as e:
         logger.error(f"Error loading closed trades: {e}")
@@ -103,7 +113,7 @@ def send_telegram(msg):
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
         response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        logger.info(f"Telegram sent: {msg}")
+        logger.info(f"Telegram sent: {msg[:50]}...")
         return response.get('result', {}).get('message_id')
     except Exception as e:
         logger.error(f"Telegram error: {e}")
@@ -114,7 +124,7 @@ def edit_telegram_message(message_id, new_text):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
         requests.post(url, data=data, timeout=5, proxies=proxies)
-        logger.info(f"Telegram updated: {new_text}")
+        logger.info(f"Telegram updated: {new_text[:50]}...")
     except Exception as e:
         logger.error(f"Edit error: {e}")
 
@@ -129,6 +139,7 @@ app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
+alert_queue = queue.Queue()
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
@@ -172,10 +183,10 @@ def get_wick_analysis(candles, pattern):
     upper_wick = c1[2] - max(c1[1], c1[4])
     lower_wick = min(c1[1], c1[4]) - c1[3]
     if upper_wick > 2 * body_size:
-        return "⚠️ Sell Press (🔴 Upper > 2x body)"
+        return "Sell Press"
     elif lower_wick > 2 * body_size:
-        return "⚠️ Buy Press (🟢 Lower > 2x body)"
-    return "✅ Norm"
+        return "Buy Press"
+    return "Norm"
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
@@ -268,9 +279,14 @@ def check_tp_sl():
                             'ema_status': trade['ema_status'],
                             'eth_ema_status': trade['eth_ema_status'],
                             'entry_time': trade['entry_time'],
-                            'entry_price': trade['entry'],
+                            'entry_price': trade['entry_price'],
+                            'exit_price': trade['tp'] if 'TP' in hit else trade['sl'],
                             'pattern': 'Rising' if trade['side'] == 'buy' else 'Falling',
-                            'wick_analysis': trade['wick_analysis']
+                            'wick_analysis': trade['wick_analysis'],
+                            'side': trade['side'],
+                            'tp': trade['tp'],
+                            'sl': trade['sl'],
+                            'close_time': int(time.time() * 1000)
                         }
                         closed_trades.append(closed_trade)
                         save_closed_trades(closed_trade)
@@ -328,7 +344,8 @@ def process_symbol(symbol, alert_queue):
 
         if detect_rising_three(candles):
             wick_analysis = get_wick_analysis(candles, 'rising')
-            sl = round_price(symbol, entry_price * (1 - 0.015))
+            sl = round_price(symbol, entry_price * (1 - SL_PCT))
+            tp = big_candle_close
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
@@ -353,7 +370,7 @@ def process_symbol(symbol, alert_queue):
                 f"Body Size (1st): {body_size_pct:.2f}%\n"
                 f"Wick: {wick_analysis}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {big_candle_close}\n"
+                f"tp - {tp}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
@@ -361,7 +378,8 @@ def process_symbol(symbol, alert_queue):
 
         elif detect_falling_three(candles):
             wick_analysis = get_wick_analysis(candles, 'falling')
-            sl = round_price(symbol, entry_price * (1 + 0.015))
+            sl = round_price(symbol, entry_price * (1 + SL_PCT))
+            tp = big_candle_close
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
@@ -386,7 +404,7 @@ def process_symbol(symbol, alert_queue):
                 f"Body Size (1st): {body_size_pct:.2f}%\n"
                 f"Wick: {wick_analysis}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {big_candle_close}\n"
+                f"tp - {tp}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
@@ -416,7 +434,6 @@ def scan_loop():
     load_trades()
     symbols = get_symbols()
     logger.info(f"Scanning {len(symbols)} Binance Futures symbols...")
-    alert_queue = queue.Queue()
 
     chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
@@ -452,7 +469,7 @@ def scan_loop():
             }
             for t in pattern_trades:
                 eth_status = 'EMA9>21' if t['eth_ema_status'] == '✅' else 'EMA9<21'
-                wick_key = t['wick_analysis'].split(' ')[1] if 'Press' in t['wick_analysis'] else 'Norm'
+                wick_key = t['wick_analysis']
                 key = f"{wick_key}, ETH {eth_status}"
                 metrics[pattern][key]['count'] += 1
                 if t['pnl'] > 0:
@@ -565,7 +582,7 @@ def scan_loop():
                 if all_closed_trades:
                     try:
                         earliest_time = min(t['entry_time'] for t in all_closed_trades)
-                        latest_time = max(t['entry_time'] for t in all_closed_trades)
+                        latest_time = max(t['close_time'] for t in all_closed_trades if 'close_time' in t)
                         eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, since=int(earliest_time), limit=1000)
                         eth_start_price = next((c[4] for c in eth_candles if c[0] >= earliest_time), None)
                         eth_end_price = next((c[4] for c in reversed(eth_candles) if c[0] <= latest_time), None)
@@ -644,8 +661,8 @@ def scan_loop():
                 send_telegram(summary_msg)
                 send_telegram(f"Open trades after scan: {len(open_trades)}")
                 logger.info(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
-                closed_trades = []
-                pending_alerts = []
+                closed_trades.clear()
+                pending_alerts.clear()
             except Exception as e:
                 logger.error(f"Alert thread error: {e}")
                 time.sleep(1)
