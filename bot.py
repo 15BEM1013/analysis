@@ -151,11 +151,11 @@ def load_closed_trades():
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    for proxy in PROXY_LIST + [None]:  # Try each proxy, then no proxy
+    for proxy in PROXY_LIST + [None]:
         try:
             proxies = get_proxy_config(proxy) if proxy else None
             response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            print(f"Telegram sent: {msg}")
+            print(f"Telegram sent using proxy {proxy['host'] if proxy else 'no proxy'}: {msg}")
             return response.get('result', {}).get('message_id')
         except Exception as e:
             print(f"Telegram error with proxy {proxy['host'] if proxy else 'no proxy'}: {e}")
@@ -170,7 +170,7 @@ def edit_telegram_message(message_id, new_text):
         try:
             proxies = get_proxy_config(proxy) if proxy else None
             requests.post(url, data=data, proxies=proxies, timeout=5)
-            print(f"Telegram updated: {new_text}")
+            print(f"Telegram updated using proxy {proxy['host'] if proxy else 'no proxy'}: {new_text}")
             return
         except Exception as e:
             print(f"Edit error with proxy {proxy['host'] if proxy else 'no proxy'}: {e}")
@@ -187,7 +187,7 @@ def create_exchange():
                 'enableRateLimit': True
             })
             exchange.load_markets()  # Test connection
-            print(f"Connected using proxy {proxy['host'] if proxy else 'no proxy'}")
+            print(f"Successfully connected to Binance using proxy {proxy['host'] if proxy else 'no proxy'}")
             return exchange
         except Exception as e:
             print(f"Failed to connect with proxy {proxy['host'] if proxy else 'no proxy'}: {e}")
@@ -249,7 +249,7 @@ def detect_falling_three(candles):
     )
     small_green_0 = (
         is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
-        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] < c2[2] - (c2[2] - c3]) * 0.3 and c0[5] < c2[5]
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
