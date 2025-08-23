@@ -374,6 +374,7 @@ def process_symbol(symbol, alert_queue):
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
+            logger.info(f"Signal detected for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
             alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'buy', body_size_pct, wick_analysis))
 
         elif detect_falling_three(candles):
@@ -408,6 +409,7 @@ def process_symbol(symbol, alert_queue):
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
+            logger.info(f"Signal detected for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
             alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'sell', body_size_pct, wick_analysis))
 
     except ccxt.RateLimitExceeded:
@@ -485,10 +487,7 @@ def scan_loop():
         pending_alerts = []
         while True:
             try:
-                next_close = get_next_candle_close()
-                wait_time = max(0, next_close - time.time())
-                time.sleep(wait_time)
-
+                # Check queue every second instead of waiting for candle close
                 while not alert_queue.empty():
                     pending_alerts.append(alert_queue.get())
 
@@ -499,6 +498,7 @@ def scan_loop():
 
                 for alert in pending_alerts:
                     symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, side, body_size_pct, wick_analysis = alert
+                    logger.info(f"Processing signal for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
                     if len(open_trades) < MAX_OPEN_TRADES:
                         mid = send_telegram(msg)
                         if mid and symbol not in open_trades:
@@ -663,6 +663,7 @@ def scan_loop():
                 logger.info(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
                 closed_trades.clear()
                 pending_alerts.clear()
+                time.sleep(30 * 60)  # Send summary every 30 minutes
             except Exception as e:
                 logger.error(f"Alert thread error: {e}")
                 time.sleep(1)
