@@ -30,26 +30,50 @@ CLOSED_TRADE_FILE = 'closed_trades.json'
 
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
-    '156.233.89.157:3129',
-    '156.233.89.96:3129',
-    '156.233.84.240:3129',
-    '156.233.91.249:3129',
-    '156.228.185.40:3129',
-    '156.233.85.133:3129',
-    '156.228.180.68:3129',
-    '156.228.175.93:3129',
-    '156.233.75.142:3129',
-    '156.228.175.249:3129',
-    '156.228.183.54:3129',
-    '156.228.184.169:3129',
-    '156.233.84.106:3129'
+    {
+        'host': '23.95.150.145',
+        'port': '6114',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '198.23.239.134',
+        'port': '6540',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '45.38.107.97',
+        'port': '6014',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '107.172.163.27',
+        'port': '6543',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '64.137.96.74',
+        'port': '6641',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    },
+    {
+        'host': '45.43.186.39',
+        'port': '6257',
+        'username': 'xlgrzqki',
+        'password': 'afvurlw3oeor'
+    }
 ]
 
-# Function to get a proxy configuration
-def get_proxy_config(proxy):
+# Function to get a random proxy
+def get_random_proxy():
+    proxy = random.choice(PROXY_LIST)
     return {
-        "http": f"http://{proxy}",
-        "https": f"http://{proxy}"
+        "http": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
+        "https": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
     }
 
 # === TIME ZONE HELPER ===
@@ -105,91 +129,65 @@ def load_closed_trades():
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
-    for proxy in PROXY_LIST:
-        try:
-            proxies = get_proxy_config(proxy)
-            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            print(f"Telegram sent with proxy {proxy}: {msg}")
-            return response.get('result', {}).get('message_id')
-        except Exception as e:
-            print(f"Telegram error with proxy {proxy}: {e}")
-    # Try without proxy as fallback
     try:
-        response = requests.post(url, data=data, timeout=5).json()
-        print(f"Telegram sent (no proxy): {msg}")
+        # Use a random proxy for Telegram
+        proxies = get_random_proxy()
+        response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+        print(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
-        print(f"Telegram error without proxy: {e}")
-        return None
+        print(f"Telegram error: {e}")
+        # Try without proxy if proxy fails
+        try:
+            response = requests.post(url, data=data, timeout=5).json()
+            print(f"Telegram sent (no proxy): {msg}")
+            return response.get('result', {}).get('message_id')
+        except Exception as e2:
+            print(f"Telegram error without proxy: {e2}")
+            return None
 
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
-    for proxy in PROXY_LIST:
-        try:
-            proxies = get_proxy_config(proxy)
-            requests.post(url, data=data, proxies=proxies, timeout=5)
-            print(f"Telegram updated with proxy {proxy}: {new_text}")
-            return
-        except Exception as e:
-            print(f"Edit error with proxy {proxy}: {e}")
-    # Try without proxy as fallback
     try:
-        requests.post(url, data=data, timeout=5)
-        print(f"Telegram updated (no proxy): {new_text}")
+        # Use a random proxy for Telegram
+        proxies = get_random_proxy()
+        requests.post(url, data=data, proxies=proxies, timeout=5)
+        print(f"Telegram updated: {new_text}")
     except Exception as e:
-        print(f"Edit error without proxy: {e}")
+        print(f"Edit error: {e}")
+        # Try without proxy if proxy fails
+        try:
+            requests.post(url, data=data, timeout=5)
+            print(f"Telegram updated (no proxy): {new_text}")
+        except Exception as e2:
+            print(f"Edit error without proxy: {e2}")
 
 # === INIT ===
-def create_exchange_with_proxy(proxy=None):
-    proxies = get_proxy_config(proxy) if proxy else None
+# We'll create exchange instances with different proxies
+def create_exchange_with_proxy(proxy_config=None):
+    if proxy_config:
+        proxies = {
+            "http": f"http://{proxy_config['username']}:{proxy_config['password']}@{proxy_config['host']}:{proxy_config['port']}",
+            "https": f"http://{proxy_config['username']}:{proxy_config['password']}@{proxy_config['host']}:{proxy_config['port']}"
+        }
+    else:
+        proxies = None
+    
     return ccxt.binance({
         'options': {'defaultType': 'future'},
         'proxies': proxies,
         'enableRateLimit': True
     })
 
-# Function to try connecting with proxies until success
-def get_working_exchange():
-    for proxy in PROXY_LIST:
-        try:
-            exchange = create_exchange_with_proxy(proxy)
-            # Test connection by fetching markets
-            exchange.load_markets()
-            print(f"Connected successfully with proxy {proxy}")
-            return exchange
-        except Exception as e:
-            print(f"Connection failed with proxy {proxy}: {e}")
-    # Try without proxy as fallback
-    try:
-        exchange = create_exchange_with_proxy()
-        exchange.load_markets()
-        print("Connected successfully without proxy")
-        return exchange
-    except Exception as e:
-        print(f"Connection failed without proxy: {e}")
-        raise Exception("Failed to connect with all proxies and without proxy")
-
 # Create a list of exchange instances with different proxies
-exchange_instances = []
-for proxy in PROXY_LIST:
-    try:
-        exchange = create_exchange_with_proxy(proxy)
-        exchange_instances.append(exchange)
-    except Exception as e:
-        print(f"Failed to create exchange with proxy {proxy}: {e}")
+exchange_instances = [create_exchange_with_proxy(proxy) for proxy in PROXY_LIST]
 # Add one instance without proxy as fallback
 exchange_instances.append(create_exchange_with_proxy())
 
-# Function to get a working exchange instance
+# Function to get a random exchange instance
 def get_exchange_instance():
-    for exchange in exchange_instances:
-        try:
-            exchange.load_markets()  # Test connection
-            return exchange
-        except Exception as e:
-            print(f"Exchange instance failed: {e}")
-    return get_working_exchange()  # Create a new working exchange if all instances fail
+    return random.choice(exchange_instances)
 
 app = Flask(__name__)
 
@@ -252,13 +250,25 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    exchange = get_exchange_instance()
+    # Try with different exchanges until we get the symbols
+    for exchange in exchange_instances:
+        try:
+            markets = exchange.load_markets()
+            symbols = [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+            if symbols:
+                return symbols
+        except Exception as e:
+            print(f"Error getting symbols with proxy: {e}")
+            continue
+    
+    # If all proxies fail, try without proxy
     try:
-        markets = exchange.load_markets()
+        exchange_no_proxy = create_exchange_with_proxy()
+        markets = exchange_no_proxy.load_markets()
         symbols = [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
         return symbols
     except Exception as e:
-        print(f"Error getting symbols: {e}")
+        print(f"Error getting symbols without proxy: {e}")
         return []
 
 # === CANDLE CLOSE ===
@@ -277,6 +287,7 @@ def check_tp_sl():
         try:
             for sym, trade in list(open_trades.items()):
                 try:
+                    # Use a random exchange instance
                     exchange = get_exchange_instance()
                     ticker = exchange.fetch_ticker(sym)
                     last = ticker['last']
@@ -330,7 +341,9 @@ def check_tp_sl():
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
     try:
+        # Use a random exchange instance
         exchange = get_exchange_instance()
+        
         for attempt in range(3):
             candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
             if len(candles) < 25:
