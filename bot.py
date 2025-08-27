@@ -155,18 +155,18 @@ def analyze_first_small_candle(candle, pattern_type):
 
     if pattern_type == 'rising':
         if wick_ratio >= 2.5 and body < 10:
-            return f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'selling_pressure'}
         elif wick_ratio_reverse >= 2.5 and body < 10:
-            return f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'buying_pressure'}
         else:
-            return f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral'}
     elif pattern_type == 'falling':
         if wick_ratio_reverse >= 2.5 and body < 10:
-            return f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'buying_pressure'}
         elif wick_ratio >= 2.5 and body < 10:
-            return f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'selling_pressure'}
         else:
-            return f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+            return {'text': f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral'}
 
 # === EMA ===
 def calculate_ema(candles, period=21):
@@ -276,7 +276,9 @@ def check_tp_sl():
                             'pnl': profit,
                             'pnl_pct': pnl,
                             'category': trade['category'],
-                            'ema_status': trade['ema_status']
+                            'ema_status': trade['ema_status'],
+                            'pressure_status': trade['pressure_status'],
+                            'hit': hit
                         }
                         closed_trades.append(closed_trade)
                         save_closed_trades(closed_trade)
@@ -329,7 +331,7 @@ def process_symbol(symbol, alert_queue):
                 msg = (
                     f"{symbol} - RISING PATTERN DETECTED BUT SKIPPED\n"
                     f"RSI: {rsi:.2f} (Overbought, > {RSI_OVERBOUGHT})\n"
-                    f"First small candle: {first_candle_analysis}"
+                    f"First small candle: {first_candle_analysis['text']}"
                 )
                 send_telegram(msg)
                 return
@@ -353,13 +355,13 @@ def process_symbol(symbol, alert_queue):
                 f"Above 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
-                f"First small candle: {first_candle_analysis}\n"
+                f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {big_candle_close}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, 'buy', entry_price, big_candle_close, sl, first_candle_analysis))
+            alert_queue.put((symbol, msg, ema_status, category, 'buy', entry_price, big_candle_close, sl, first_candle_analysis['text'], first_candle_analysis['status']))
 
         elif detect_falling_three(candles):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
@@ -367,7 +369,7 @@ def process_symbol(symbol, alert_queue):
                 msg = (
                     f"{symbol} - FALLING PATTERN DETECTED BUT SKIPPED\n"
                     f"RSI: {rsi:.2f} (Oversold, < {RSI_OVERSOLD})\n"
-                    f"First small candle: {first_candle_analysis}"
+                    f"First small candle: {first_candle_analysis['text']}"
                 )
                 send_telegram(msg)
                 return
@@ -391,13 +393,13 @@ def process_symbol(symbol, alert_queue):
                 f"Below 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
-                f"First small candle: {first_candle_analysis}\n"
+                f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {big_candle_close}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, 'sell', entry_price, big_candle_close, sl, first_candle_analysis))
+            alert_queue.put((symbol, msg, ema_status, category, 'sell', entry_price, big_candle_close, sl, first_candle_analysis['text'], first_candle_analysis['status']))
 
     except ccxt.RateLimitExceeded:
         time.sleep(5)
@@ -425,7 +427,7 @@ def scan_loop():
     def send_alerts():
         while True:
             try:
-                symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis = alert_queue.get(timeout=1)
+                symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis, pressure_status = alert_queue.get(timeout=1)
                 if len(open_trades) < MAX_OPEN_TRADES:
                     mid = send_telegram(msg)
                     if mid and symbol not in open_trades:
@@ -438,7 +440,8 @@ def scan_loop():
                             'msg_id': mid,
                             'ema_status': ema_status,
                             'category': category,
-                            'first_candle_analysis': first_candle_analysis
+                            'first_candle_analysis': first_candle_analysis,
+                            'pressure_status': pressure_status
                         }
                         open_trades[symbol] = trade
                         save_trades()
@@ -467,7 +470,8 @@ def scan_loop():
                                         'msg_id': mid,
                                         'ema_status': ema_status,
                                         'category': category,
-                                        'first_candle_analysis': first_candle_analysis
+                                        'first_candle_analysis': first_candle_analysis,
+                                        'pressure_status': pressure_status
                                     }
                                     open_trades[symbol] = trade
                                     save_trades()
@@ -509,21 +513,40 @@ def scan_loop():
         one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
         two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
 
-        def get_category_metrics(trades):
-            count = len(trades)
-            wins = sum(1 for t in trades if t['pnl'] > 0)
-            losses = sum(1 for t in trades if t['pnl'] < 0)
-            pnl = sum(t['pnl'] for t in trades)
-            pnl_pct = sum(t['pnl_pct'] for t in trades)
-            win_rate = (wins / count * 100) if count > 0 else 0.00
-            return count, wins, losses, pnl, pnl_pct, win_rate
+        def get_pressure_metrics(trades):
+            neutral_trades = [t for t in trades if t['pressure_status'] == 'neutral']
+            selling_trades = [t for t in trades if t['pressure_status'] == 'selling_pressure']
+            buying_trades = [t for t in trades if t['pressure_status'] == 'buying_pressure']
 
-        two_green_count, two_green_wins, two_green_losses, two_green_pnl, two_green_pnl_pct, two_green_win_rate = get_category_metrics(two_green_trades)
-        one_green_count, one_green_wins, one_green_losses, one_green_pnl, one_green_pnl_pct, one_green_win_rate = get_category_metrics(one_green_trades)
-        two_cautions_count, two_cautions_wins, two_cautions_losses, two_cautions_pnl, two_cautions_pnl_pct, two_cautions_win_rate = get_category_metrics(two_cautions_trades)
+            def calc_metrics(trade_list):
+                count = len(trade_list)
+                wins = sum(1 for t in trade_list if t['pnl'] > 0)
+                losses = sum(1 for t in trade_list if t['pnl'] < 0)
+                tp_hits = sum(1 for t in trade_list if t['hit'] == '✅ TP hit')
+                sl_hits = sum(1 for t in trade_list if t['hit'] == '❌ SL hit')
+                pnl = sum(t['pnl'] for t in trade_list)
+                pnl_pct = sum(t['pnl_pct'] for t in trade_list)
+                win_rate = (wins / count * 100) if count > 0 else 0.00
+                return count, wins, losses, tp_hits, sl_hits, pnl, pnl_pct, win_rate
 
-        total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
-        total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
+            neutral_metrics = calc_metrics(neutral_trades)
+            selling_metrics = calc_metrics(selling_trades)
+            buying_metrics = calc_metrics(buying_trades)
+            total_metrics = calc_metrics(trades)
+
+            return {
+                'neutral': neutral_metrics,
+                'selling': selling_metrics,
+                'buying': buying_metrics,
+                'total': total_metrics
+            }
+
+        two_green_metrics = get_pressure_metrics(two_green_trades)
+        one_green_metrics = get_pressure_metrics(one_green_trades)
+        two_cautions_metrics = get_pressure_metrics(two_cautions_trades)
+
+        total_pnl = sum(t['pnl'] for t in all_closed_trades)
+        total_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades)
         cumulative_pnl = total_pnl
         cumulative_pnl_pct = total_pnl_pct
 
@@ -542,11 +565,23 @@ def scan_loop():
         summary_msg = (
             f"🔍 Scan Completed at {timestamp}\n"
             f"📊 Trade Summary (Closed Trades):\n"
-            f"- ✅✅ Two Green Ticks: {two_green_count} trades (Wins: {two_green_wins}, Losses: {two_green_losses}), PnL: ${two_green_pnl:.2f} ({two_green_pnl_pct:.2f}%), Win Rate: {two_green_win_rate:.2f}%\n"
-            f"- ✅⚠️ One Green, One Caution: {one_green_count} trades (Wins: {one_green_wins}, Losses: {one_green_losses}), PnL: ${one_green_pnl:.2f} ({one_green_pnl_pct:.2f}%), Win Rate: {one_green_win_rate:.2f}%\n"
-            f"- ⚠️⚠️ Two Cautions: {two_cautions_count} trades (Wins: {two_cautions_wins}, Losses: {two_cautions_losses}), PnL: ${two_cautions_pnl:.2f} ({two_cautions_pnl_pct:.2f}%), Win Rate: {two_cautions_win_rate:.2f}%\n"
-            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
-            f"📈 Cumulative PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
+            f"- ✅✅ Two Green Ticks:\n"
+            f"  - Neutral ✅: {two_green_metrics['neutral'][0]} trades (W: {two_green_metrics['neutral'][1]}, L: {two_green_metrics['neutral'][2]}, TP: {two_green_metrics['neutral'][3]}, SL: {two_green_metrics['neutral'][4]}), PnL: ${two_green_metrics['neutral'][5]:.2f} ({two_green_metrics['neutral'][6]:.2f}%), Win Rate: {two_green_metrics['neutral'][7]:.2f}%\n"
+            f"  - Selling Pressure ⚠️: {two_green_metrics['selling'][0]} trades (W: {two_green_metrics['selling'][1]}, L: {two_green_metrics['selling'][2]}, TP: {two_green_metrics['selling'][3]}, SL: {two_green_metrics['selling'][4]}), PnL: ${two_green_metrics['selling'][5]:.2f} ({two_green_metrics['selling'][6]:.2f}%), Win Rate: {two_green_metrics['selling'][7]:.2f}%\n"
+            f"  - Buying Pressure ⚠️: {two_green_metrics['buying'][0]} trades (W: {two_green_metrics['buying'][1]}, L: {two_green_metrics['buying'][2]}, TP: {two_green_metrics['buying'][3]}, SL: {two_green_metrics['buying'][4]}), PnL: ${two_green_metrics['buying'][5]:.2f} ({two_green_metrics['buying'][6]:.2f}%), Win Rate: {two_green_metrics['buying'][7]:.2f}%\n"
+            f"  - Total: {two_green_metrics['total'][0]} trades (W: {two_green_metrics['total'][1]}, L: {two_green_metrics['total'][2]}, TP: {two_green_metrics['total'][3]}, SL: {two_green_metrics['total'][4]}), PnL: ${two_green_metrics['total'][5]:.2f} ({two_green_metrics['total'][6]:.2f}%), Win Rate: {two_green_metrics['total'][7]:.2f}%\n"
+            f"- ✅⚠️ One Green, One Caution:\n"
+            f"  - Neutral ✅: {one_green_metrics['neutral'][0]} trades (W: {one_green_metrics['neutral'][1]}, L: {one_green_metrics['neutral'][2]}, TP: {one_green_metrics['neutral'][3]}, SL: {one_green_metrics['neutral'][4]}), PnL: ${one_green_metrics['neutral'][5]:.2f} ({one_green_metrics['neutral'][6]:.2f}%), Win Rate: {one_green_metrics['neutral'][7]:.2f}%\n"
+            f"  - Selling Pressure ⚠️: {one_green_metrics['selling'][0]} trades (W: {one_green_metrics['selling'][1]}, L: {one_green_metrics['selling'][2]}, TP: {one_green_metrics['selling'][3]}, SL: {one_green_metrics['selling'][4]}), PnL: ${one_green_metrics['selling'][5]:.2f} ({one_green_metrics['selling'][6]:.2f}%), Win Rate: {one_green_metrics['selling'][7]:.2f}%\n"
+            f"  - Buying Pressure ⚠️: {one_green_metrics['buying'][0]} trades (W: {one_green_metrics['buying'][1]}, L: {one_green_metrics['buying'][2]}, TP: {one_green_metrics['buying'][3]}, SL: {one_green_metrics['buying'][4]}), PnL: ${one_green_metrics['buying'][5]:.2f} ({one_green_metrics['buying'][6]:.2f}%), Win Rate: {one_green_metrics['buying'][7]:.2f}%\n"
+            f"  - Total: {one_green_metrics['total'][0]} trades (W: {one_green_metrics['total'][1]}, L: {one_green_metrics['total'][2]}, TP: {one_green_metrics['total'][3]}, SL: {one_green_metrics['total'][4]}), PnL: ${one_green_metrics['total'][5]:.2f} ({one_green_metrics['total'][6]:.2f}%), Win Rate: {one_green_metrics['total'][7]:.2f}%\n"
+            f"- ⚠️⚠️ Two Cautions:\n"
+            f"  - Neutral ✅: {two_cautions_metrics['neutral'][0]} trades (W: {two_cautions_metrics['neutral'][1]}, L: {two_cautions_metrics['neutral'][2]}, TP: {two_cautions_metrics['neutral'][3]}, SL: {two_cautions_metrics['neutral'][4]}), PnL: ${two_cautions_metrics['neutral'][5]:.2f} ({two_cautions_metrics['neutral'][6]:.2f}%), Win Rate: {two_cautions_metrics['neutral'][7]:.2f}%\n"
+            f"  - Selling Pressure ⚠️: {two_cautions_metrics['selling'][0]} trades (W: {two_cautions_metrics['selling'][1]}, L: {two_cautions_metrics['selling'][2]}, TP: {two_cautions_metrics['selling'][3]}, SL: {two_cautions_metrics['selling'][4]}), PnL: ${two_cautions_metrics['selling'][5]:.2f} ({two_cautions_metrics['selling'][6]:.2f}%), Win Rate: {two_cautions_metrics['selling'][7]:.2f}%\n"
+            f"  - Buying Pressure ⚠️: {two_cautions_metrics['buying'][0]} trades (W: {two_cautions_metrics['buying'][1]}, L: {two_cautions_metrics['buying'][2]}, TP: {two_cautions_metrics['buying'][3]}, SL: {two_cautions_metrics['buying'][4]}), PnL: ${two_cautions_metrics['buying'][5]:.2f} ({two_cautions_metrics['buying'][6]:.2f}%), Win Rate: {two_cautions_metrics['buying'][7]:.2f}%\n"
+            f"  - Total: {two_cautions_metrics['total'][0]} trades (W: {two_cautions_metrics['total'][1]}, L: {two_cautions_metrics['total'][2]}, TP: {two_cautions_metrics['total'][3]}, SL: {two_cautions_metrics['total'][4]}), PnL: ${two_cautions_metrics['total'][5]:.2f} ({two_cautions_metrics['total'][6]:.2f}%), Win Rate: {two_cautions_metrics['total'][7]:.2f}%\n"
+            f"💰 Total Executed PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
+            f"📈 Cumulative Executed PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
             f"🏆 Top Symbol: {top_symbol_name or 'None'} with ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
             f"🔄 Open Trades: {num_open}"
         )
