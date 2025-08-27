@@ -7,5 +7,6 @@ pytz
 numpy
 python-telegram-bot
 pandas
+TA-Lib
 redis
 python-dotenv
