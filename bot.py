@@ -10,16 +10,13 @@ import math
 import queue
 import json
 import os
-import logging
-
-# === LOGGING SETUP ===
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+import talib
+import numpy as np
 
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
-TIMEFRAME = '30m'
+TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
@@ -37,6 +34,9 @@ CATEGORY_PRIORITY = {
     'one_green_one_caution': 2,
     'two_cautions': 1
 }
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 80
+RSI_OVERSOLD = 30
 
 # === PROXY CONFIGURATION ===
 PROXY_HOST = '45.38.107.97'
@@ -57,10 +57,10 @@ def get_ist_time():
 def save_trades():
     try:
         with open(TRADE_FILE, 'w') as f:
-            json.dump(open_trades, f, default=str, indent=2)
-        logger.info(f"Trades saved to {TRADE_FILE}, total trades: {len(open_trades)}")
+            json.dump(open_trades, f, default=str)
+        print(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
-        logger.error(f"Error saving trades: {e}")
+        print(f"Error saving trades: {e}")
 
 def load_trades():
     global open_trades
@@ -69,9 +69,9 @@ def load_trades():
             with open(TRADE_FILE, 'r') as f:
                 loaded = json.load(f)
                 open_trades = {k: v for k, v in loaded.items()}
-            logger.info(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
     except Exception as e:
-        logger.error(f"Error loading trades: {e}")
+        print(f"Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
@@ -80,31 +80,21 @@ def save_closed_trades(closed_trade):
         if os.path.exists(CLOSED_TRADE_FILE):
             with open(CLOSED_TRADE_FILE, 'r') as f:
                 all_closed_trades = json.load(f)
-        if not isinstance(all_closed_trades, list):
-            logger.warning(f"Resetting invalid closed_trades.json content")
-            all_closed_trades = []
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
-            json.dump(all_closed_trades, f, default=str, indent=2)
-        logger.info(f"Closed trade saved to {CLOSED_TRADE_FILE}, total trades: {len(all_closed_trades)}")
+            json.dump(all_closed_trades, f, default=str)
+        print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
-        logger.error(f"Error saving closed trades: {e}")
+        print(f"Error saving closed trades: {e}")
 
 def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
             with open(CLOSED_TRADE_FILE, 'r') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    logger.info(f"Loaded {len(data)} closed trades from {CLOSED_TRADE_FILE}")
-                    return data
-                else:
-                    logger.error(f"Invalid data format in {CLOSED_TRADE_FILE}, expected a list")
-                    return []
-        logger.info(f"No closed trades file found at {CLOSED_TRADE_FILE}")
+                return json.load(f)
         return []
     except Exception as e:
-        logger.error(f"Error loading closed trades: {e}")
+        print(f"Error loading closed trades: {e}")
         return []
 
 # === TELEGRAM ===
@@ -113,10 +103,10 @@ def send_telegram(msg):
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
         response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        logger.info(f"Telegram sent: {msg[:50]}...")
+        print(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
-        logger.error(f"Telegram error: {e}")
+        print(f"Telegram error: {e}")
         return None
 
 def edit_telegram_message(message_id, new_text):
@@ -124,9 +114,9 @@ def edit_telegram_message(message_id, new_text):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
         requests.post(url, data=data, timeout=5, proxies=proxies)
-        logger.info(f"Telegram updated: {new_text[:50]}...")
+        print(f"Telegram updated: {new_text}")
     except Exception as e:
-        logger.error(f"Edit error: {e}")
+        print(f"Edit error: {e}")
 
 # === INIT ===
 exchange = ccxt.binance({
@@ -139,7 +129,6 @@ app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
-alert_queue = queue.Queue()
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
@@ -149,10 +138,35 @@ def lower_wick_pct(c):
     if is_bearish(c) and (c[1] - c[4]) != 0:
         return (c[1] - c[3]) / (c[1] - c[4]) * 100
     return 0
+
 def upper_wick_pct(c):
     if is_bullish(c) and (c[4] - c[1]) != 0:
         return (c[2] - c[4]) / (c[4] - c[1]) * 100
+    elif is_bearish(c) and (c[1] - c[4]) != 0:
+        return (c[2] - c[1]) / (c[1] - c[4]) * 100
     return 0
+
+def analyze_first_small_candle(candle, pattern_type):
+    body = body_pct(candle)
+    upper_wick = (candle[2] - max(candle[1], candle[4])) / candle[1] * 100
+    lower_wick = (min(candle[1], candle[4]) - candle[3]) / candle[1] * 100
+    wick_ratio = upper_wick / lower_wick if lower_wick != 0 else float('inf')
+    wick_ratio_reverse = lower_wick / upper_wick if upper_wick != 0 else float('inf')
+
+    if pattern_type == 'rising':
+        if wick_ratio >= 2.5 and body < 10:
+            return f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+        elif wick_ratio_reverse >= 2.5 and body < 10:
+            return f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+        else:
+            return f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+    elif pattern_type == 'falling':
+        if wick_ratio_reverse >= 2.5 and body < 10:
+            return f"Buying pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+        elif wick_ratio >= 2.5 and body < 10:
+            return f"Selling pressure ⚠️\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
+        else:
+            return f"Neutral ✅\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%"
 
 # === EMA ===
 def calculate_ema(candles, period=21):
@@ -165,6 +179,13 @@ def calculate_ema(candles, period=21):
         ema = (close - ema) * multiplier + ema
     return ema
 
+# === RSI ===
+def calculate_rsi(candles, period=14):
+    closes = np.array([c[4] for c in candles])
+    if len(closes) < period:
+        return None
+    return talib.RSI(closes, timeperiod=period)[-1]
+
 # === PRICE ROUNDING ===
 def round_price(symbol, price):
     try:
@@ -173,20 +194,8 @@ def round_price(symbol, price):
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
     except Exception as e:
-        logger.error(f"Error rounding price for {symbol}: {e}")
+        print(f"Error rounding price for {symbol}: {e}")
         return price
-
-# === WICK ANALYSIS ===
-def get_wick_analysis(candles, pattern):
-    c1 = candles[-3]  # First small candle
-    body_size = abs(c1[4] - c1[1])
-    upper_wick = c1[2] - max(c1[1], c1[4])
-    lower_wick = min(c1[1], c1[4]) - c1[3]
-    if upper_wick > 2 * body_size:
-        return "Sell Press"
-    elif lower_wick > 2 * body_size:
-        return "Buy Press"
-    return "Norm"
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
@@ -223,12 +232,8 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    try:
-        markets = exchange.load_markets()
-        return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
-    except Exception as e:
-        logger.error(f"Error loading markets: {e}")
-        return []
+    markets = exchange.load_markets()
+    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -244,11 +249,6 @@ def check_tp_sl():
     global closed_trades
     while True:
         try:
-            next_close = get_next_candle_close()
-            wait_time = max(0, next_close - time.time())
-            logger.info(f"TP/SL waiting {wait_time:.1f} seconds for next 15m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
-            time.sleep(wait_time)
-
             for sym, trade in list(open_trades.items()):
                 try:
                     ticker = exchange.fetch_ticker(sym)
@@ -276,239 +276,172 @@ def check_tp_sl():
                             'pnl': profit,
                             'pnl_pct': pnl,
                             'category': trade['category'],
-                            'ema_status': trade['ema_status'],
-                            'eth_ema_status': trade['eth_ema_status'],
-                            'entry_time': trade['entry_time'],
-                            'entry_price': trade['entry_price'],
-                            'exit_price': trade['tp'] if 'TP' in hit else trade['sl'],
-                            'pattern': 'Rising' if trade['side'] == 'buy' else 'Falling',
-                            'wick_analysis': trade['wick_analysis'],
-                            'side': trade['side'],
-                            'tp': trade['tp'],
-                            'sl': trade['sl'],
-                            'close_time': int(time.time() * 1000)
+                            'ema_status': trade['ema_status']
                         }
                         closed_trades.append(closed_trade)
                         save_closed_trades(closed_trade)
                         ema_status = trade['ema_status']
                         new_msg = (
-                            f"🔍 {sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'}\n"
-                            f"{'Price >' if trade['side'] == 'buy' else 'Price <'} 21 EMA - {ema_status['price_ema21']}\n"
-                            f"EMA 9 {'>' if trade['side'] == 'buy' else '<'} 21 - {ema_status['ema9_ema21']}\n"
-                            f"ETH/USDT EMA 9 {'>' if trade['side'] == 'buy' else '<'} 21 - {trade['eth_ema_status']}\n"
-                            f"Body Size (1st): {trade['body_size_pct']:.2f}%\n"
-                            f"Wick: {trade['wick_analysis']}\n"
+                            f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
+                            f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
+                            f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                            f"First small candle: {trade['first_candle_analysis']}\n"
                             f"entry - {trade['entry']}\n"
                             f"tp - {trade['tp']}: {'✅' if 'TP' in hit else ''}\n"
                             f"sl - {trade['sl']}: {'❌' if 'SL' in hit else ''}\n"
-                            f"P/L: {pnl:.2f}% (${profit:.2f})\n{hit}"
+                            f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
                         )
                         trade['msg'] = new_msg
                         trade['hit'] = hit
-                        edit_telegram_message(trade['msg_id'], new_msg)
                         del open_trades[sym]
                         save_trades()
                 except Exception as e:
-                    logger.error(f"TP/SL check error on {sym}: {e}")
+                    print(f"TP/SL check error on {sym}: {e}")
+            time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
-            logger.error(f"TP/SL loop error: {e}")
+            print(f"TP/SL loop error: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
     try:
-        start_time = time.time()
         for attempt in range(3):
             candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
-            eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, limit=30)
-            if len(candles) < 25 or len(eth_candles) < 25:
-                logger.warning(f"Insufficient candle data for {symbol}")
+            if len(candles) < 25:
                 return
             if attempt < 2 and candles[-1][0] > candles[-2][0]:
                 break
             time.sleep(1)
-        logger.info(f"API response time for {symbol}: {time.time() - start_time:.2f} seconds")
 
         ema21 = calculate_ema(candles, period=21)
         ema9 = calculate_ema(candles, period=9)
-        eth_ema21 = calculate_ema(eth_candles, period=21)
-        eth_ema9 = calculate_ema(eth_candles, period=9)
-        if ema21 is None or ema9 is None or eth_ema21 is None or eth_ema9 is None:
-            logger.warning(f"EMA calculation failed for {symbol}")
+        rsi = calculate_rsi(candles, period=RSI_PERIOD)
+        if ema21 is None or ema9 is None or rsi is None:
             return
 
         signal_time = candles[-2][0]
         entry_price = round_price(symbol, candles[-2][4])
         big_candle_close = round_price(symbol, candles[-4][4])
-        body_size_pct = body_pct(candles[-3])
 
         if detect_rising_three(candles):
-            wick_analysis = get_wick_analysis(candles, 'rising')
+            first_candle_analysis = analyze_first_small_candle(candles[-3], 'rising')
+            if rsi > RSI_OVERBOUGHT:
+                msg = (
+                    f"{symbol} - RISING PATTERN DETECTED BUT SKIPPED\n"
+                    f"RSI: {rsi:.2f} (Overbought, > {RSI_OVERBOUGHT})\n"
+                    f"First small candle: {first_candle_analysis}"
+                )
+                send_telegram(msg)
+                return
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
-            tp = big_candle_close
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
             price_above_ema21 = entry_price > ema21
             ema9_above_ema21 = ema9 > ema21
-            eth_ema9_above_ema21 = eth_ema9 > eth_ema21
             ema_status = {
                 'price_ema21': '✅' if price_above_ema21 else '⚠️',
                 'ema9_ema21': '✅' if ema9_above_ema21 else '⚠️'
             }
-            eth_ema_status = '✅' if eth_ema9_above_ema21 else '⚠️'
             category = (
                 'two_green' if sum(1 for v in ema_status.values() if v == '✅') == 2 else
                 'one_green_one_caution' if sum(1 for v in ema_status.values() if v == '✅') == 1 else
                 'two_cautions'
             )
             msg = (
-                f"🔍 {symbol} - RISING\n"
-                f"Price > 21 EMA - {ema_status['price_ema21']}\n"
-                f"EMA 9 > 21 - {ema_status['ema9_ema21']}\n"
-                f"ETH/USDT EMA 9 > 21 - {eth_ema_status}\n"
-                f"Body Size (1st): {body_size_pct:.2f}%\n"
-                f"Wick: {wick_analysis}\n"
+                f"{symbol} - RISING PATTERN\n"
+                f"Above 21 ema - {ema_status['price_ema21']}\n"
+                f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.2f}\n"
+                f"First small candle: {first_candle_analysis}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
+                f"tp - {big_candle_close}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            logger.info(f"Signal detected for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
-            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'buy', body_size_pct, wick_analysis))
+            alert_queue.put((symbol, msg, ema_status, category, 'buy', entry_price, big_candle_close, sl, first_candle_analysis))
 
         elif detect_falling_three(candles):
-            wick_analysis = get_wick_analysis(candles, 'falling')
+            first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
+            if rsi < RSI_OVERSOLD:
+                msg = (
+                    f"{symbol} - FALLING PATTERN DETECTED BUT SKIPPED\n"
+                    f"RSI: {rsi:.2f} (Oversold, < {RSI_OVERSOLD})\n"
+                    f"First small candle: {first_candle_analysis}"
+                )
+                send_telegram(msg)
+                return
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
-            tp = big_candle_close
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
             price_below_ema21 = entry_price < ema21
             ema9_below_ema21 = ema9 < ema21
-            eth_ema9_below_ema21 = eth_ema9 < eth_ema21
             ema_status = {
                 'price_ema21': '✅' if price_below_ema21 else '⚠️',
                 'ema9_ema21': '✅' if ema9_below_ema21 else '⚠️'
             }
-            eth_ema_status = '✅' if eth_ema9_below_ema21 else '⚠️'
             category = (
                 'two_green' if sum(1 for v in ema_status.values() if v == '✅') == 2 else
                 'one_green_one_caution' if sum(1 for v in ema_status.values() if v == '✅') == 1 else
                 'two_cautions'
             )
             msg = (
-                f"🔍 {symbol} - FALLING\n"
-                f"Price < 21 EMA - {ema_status['price_ema21']}\n"
-                f"EMA 9 < 21 - {ema_status['ema9_ema21']}\n"
-                f"ETH/USDT EMA 9 < 21 - {eth_ema_status}\n"
-                f"Body Size (1st): {body_size_pct:.2f}%\n"
-                f"Wick: {wick_analysis}\n"
+                f"{symbol} - FALLING PATTERN\n"
+                f"Below 21 ema - {ema_status['price_ema21']}\n"
+                f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.2f}\n"
+                f"First small candle: {first_candle_analysis}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
+                f"tp - {big_candle_close}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            logger.info(f"Signal detected for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
-            alert_queue.put((symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, 'sell', body_size_pct, wick_analysis))
+            alert_queue.put((symbol, msg, ema_status, category, 'sell', entry_price, big_candle_close, sl, first_candle_analysis))
 
     except ccxt.RateLimitExceeded:
-        logger.warning(f"Rate limit exceeded for {symbol}, retrying after 5 seconds")
         time.sleep(5)
-    except ccxt.BaseError as e:
-        logger.error(f"Binance API error on {symbol}: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error on {symbol}: {e}")
+        print(f"Error on {symbol}: {e}")
 
 # === PROCESS BATCH ===
 def process_batch(symbols, alert_queue):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
         for future in as_completed(future_to_symbol):
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"Batch processing error for {future_to_symbol[future]}: {e}")
+            future.result()
 
 # === SCAN LOOP ===
 def scan_loop():
     global closed_trades
     load_trades()
     symbols = get_symbols()
-    logger.info(f"Scanning {len(symbols)} Binance Futures symbols...")
+    print(f"🔍 Scanning {len(symbols)} Binance Futures symbols...")
+    alert_queue = queue.Queue()
 
     chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
 
-    def get_category_metrics(trades):
-        count = len(trades)
-        wins = sum(1 for t in trades if t['pnl'] > 0)
-        losses = sum(1 for t in trades if t['pnl'] < 0)
-        pnl = sum(t['pnl'] for t in trades)
-        pnl_pct = sum(t['pnl_pct'] for t in trades)
-        win_rate = (wins / count * 100) if count > 0 else 0.00
-        
-        metrics = {'Rising': {}, 'Falling': {}}
-        for pattern in ['Rising', 'Falling']:
-            pattern_trades = [t for t in trades if t['pattern'] == pattern]
-            metrics[pattern]['Norm, ETH EMA9>21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            metrics[pattern]['Norm, ETH EMA9<21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            metrics[pattern]['Sell Press, ETH EMA9>21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            metrics[pattern]['Sell Press, ETH EMA9<21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            metrics[pattern]['Buy Press, ETH EMA9>21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            metrics[pattern]['Buy Press, ETH EMA9<21'] = {
-                'count': 0, 'tp': 0, 'sl': 0, 'pnl': 0.0, 'pnl_pct': 0.0
-            }
-            for t in pattern_trades:
-                eth_status = 'EMA9>21' if t['eth_ema_status'] == '✅' else 'EMA9<21'
-                wick_key = t['wick_analysis']
-                key = f"{wick_key}, ETH {eth_status}"
-                metrics[pattern][key]['count'] += 1
-                if t['pnl'] > 0:
-                    metrics[pattern][key]['tp'] += 1
-                else:
-                    metrics[pattern][key]['sl'] += 1
-                metrics[pattern][key]['pnl'] += t['pnl']
-                metrics[pattern][key]['pnl_pct'] += t['pnl_pct']
-        
-        return count, wins, losses, pnl, pnl_pct, win_rate, metrics
-
     def send_alerts():
         while True:
             try:
-                symbol, msg, ema_status, category, eth_ema_status, signal_time, entry_price, side, body_size_pct, wick_analysis = alert_queue.get(timeout=1)
-                logger.info(f"Processing signal for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
+                symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis = alert_queue.get(timeout=1)
                 if len(open_trades) < MAX_OPEN_TRADES:
                     mid = send_telegram(msg)
                     if mid and symbol not in open_trades:
                         trade = {
                             'side': side,
-                            'entry': float(msg.split('entry - ')[1].split('\n')[0]),
-                            'tp': float(msg.split('tp - ')[1].split('\n')[0]),
-                            'sl': float(msg.split('sl - ')[1].split('\n')[0]),
+                            'entry': entry_price,
+                            'tp': tp,
+                            'sl': sl,
                             'msg': msg,
                             'msg_id': mid,
                             'ema_status': ema_status,
                             'category': category,
-                            'eth_ema_status': eth_ema_status,
-                            'entry_time': signal_time,
-                            'entry_price': entry_price,
-                            'body_size_pct': body_size_pct,
-                            'wick_analysis': wick_analysis
+                            'first_candle_analysis': first_candle_analysis
                         }
                         open_trades[symbol] = trade
                         save_trades()
-                        logger.info(f"Sent trade alert for {symbol} at {get_ist_time().strftime('%H:%M:%S')}")
                 else:
                     lowest_priority = min(
                         (CATEGORY_PRIORITY[trade['category']] for trade in open_trades.values()),
@@ -527,182 +460,111 @@ def scan_loop():
                                 if mid and symbol not in open_trades:
                                     trade = {
                                         'side': side,
-                                        'entry': float(msg.split('entry - ')[1].split('\n')[0]),
-                                        'tp': float(msg.split('tp - ')[1].split('\n')[0]),
-                                        'sl': float(msg.split('sl - ')[1].split('\n')[0]),
+                                        'entry': entry_price,
+                                        'tp': tp,
+                                        'sl': sl,
                                         'msg': msg,
                                         'msg_id': mid,
                                         'ema_status': ema_status,
                                         'category': category,
-                                        'eth_ema_status': eth_ema_status,
-                                        'entry_time': signal_time,
-                                        'entry_price': entry_price,
-                                        'body_size_pct': body_size_pct,
-                                        'wick_analysis': wick_analysis
+                                        'first_candle_analysis': first_candle_analysis
                                     }
                                     open_trades[symbol] = trade
                                     save_trades()
-                                    logger.info(f"Sent trade alert for {symbol} (replaced lower priority) at {get_ist_time().strftime('%H:%M:%S')}")
                                 break
-                    else:
-                        logger.info(f"Max open trades ({MAX_OPEN_TRADES}) reached, rejecting {symbol} (low priority)")
+                for sym, trade in list(open_trades.items()):
+                    if 'hit' in trade:
+                        edit_telegram_message(trade['msg_id'], trade['msg'])
                 alert_queue.task_done()
             except queue.Empty:
                 for sym, trade in list(open_trades.items()):
                     if 'hit' in trade:
                         edit_telegram_message(trade['msg_id'], trade['msg'])
-                        logger.info(f"Sent TP/SL update for {sym} at {get_ist_time().strftime('%H:%M:%S')}")
                 continue
             except Exception as e:
-                logger.error(f"Alert thread error: {e}")
+                print(f"Alert thread error: {e}")
                 time.sleep(1)
 
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp_sl, daemon=True).start()
 
     while True:
-        try:
-            next_close = get_next_candle_close()
-            wait_time = max(0, next_close - time.time())
-            logger.info(f"Waiting {wait_time:.1f} seconds for next 15m candle close at {datetime.fromtimestamp(next_close).strftime('%H:%M:%S')}")
-            time.sleep(wait_time)
-            logger.info(f"Starting scan at {get_ist_time().strftime('%H:%M:%S')}")
-            for i, chunk in enumerate(symbol_chunks):
-                logger.info(f"Processing batch {i+1}/{NUM_CHUNKS}...")
-                process_batch(chunk, alert_queue)
-                if i < NUM_CHUNKS - 1:
-                    time.sleep(BATCH_DELAY)
-            logger.info(f"Scan completed at {get_ist_time().strftime('%H:%M:%S')}")
-            all_closed_trades = load_closed_trades()
-            two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
-            one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
-            two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
+        next_close = get_next_candle_close()
+        wait_time = max(0, next_close - time.time())
+        print(f"⏳ Waiting {wait_time:.1f} seconds for next 15m candle close...")
+        time.sleep(wait_time)
 
-            two_green_metrics = get_category_metrics(two_green_trades)
-            one_green_metrics = get_category_metrics(one_green_trades)
-            two_cautions_metrics = get_category_metrics(two_cautions_trades)
+        for i, chunk in enumerate(symbol_chunks):
+            print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
+            process_batch(chunk, alert_queue)
+            if i < NUM_CHUNKS - 1:
+                time.sleep(BATCH_DELAY)
 
-            two_green_count, two_green_wins, two_green_losses, two_green_pnl, two_green_pnl_pct, two_green_win_rate, two_green_details = two_green_metrics
-            one_green_count, one_green_wins, one_green_losses, one_green_pnl, one_green_pnl_pct, one_green_win_rate, one_green_details = one_green_metrics
-            two_cautions_count, two_cautions_wins, two_cautions_losses, two_cautions_pnl, two_cautions_pnl_pct, two_cautions_win_rate, two_cautions_details = two_cautions_metrics
+        print("✅ Scan complete.")
+        num_open = len(open_trades)
+        print(f"📊 Number of open trades: {num_open}")
 
-            total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
-            total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
-            cumulative_pnl = total_pnl
-            cumulative_pnl_pct = total_pnl_pct
+        all_closed_trades = load_closed_trades()
+        two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
+        one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
+        two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
 
-            eth_price_change = 0.0
-            eth_start_price = None
-            eth_end_price = None
-            if all_closed_trades:
-                try:
-                    earliest_time = min(t['entry_time'] for t in all_closed_trades)
-                    latest_time = max(t['close_time'] for t in all_closed_trades if 'close_time' in t)
-                    eth_candles = exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, since=int(earliest_time), limit=1000)
-                    eth_start_price = next((c[4] for c in eth_candles if c[0] >= earliest_time), None)
-                    eth_end_price = next((c[4] for c in reversed(eth_candles) if c[0] <= latest_time), None)
-                    if eth_start_price and eth_end_price:
-                        eth_price_change = (eth_end_price - eth_start_price) / eth_start_price * 100
-                except Exception as e:
-                    logger.error(f"Error calculating ETH/USDT price change: {e}")
+        def get_category_metrics(trades):
+            count = len(trades)
+            wins = sum(1 for t in trades if t['pnl'] > 0)
+            losses = sum(1 for t in trades if t['pnl'] < 0)
+            pnl = sum(t['pnl'] for t in trades)
+            pnl_pct = sum(t['pnl_pct'] for t in trades)
+            win_rate = (wins / count * 100) if count > 0 else 0.00
+            return count, wins, losses, pnl, pnl_pct, win_rate
 
-            if all_closed_trades:
-                symbol_pnl = {}
-                for trade in all_closed_trades:
-                    sym = trade['symbol']
-                    symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
-                top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
-                top_symbol_name, top_symbol_pnl = top_symbol
-                top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name)
-            else:
-                top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
+        two_green_count, two_green_wins, two_green_losses, two_green_pnl, two_green_pnl_pct, two_green_win_rate = get_category_metrics(two_green_trades)
+        one_green_count, one_green_wins, one_green_losses, one_green_pnl, one_green_pnl_pct, one_green_win_rate = get_category_metrics(one_green_trades)
+        two_cautions_count, two_cautions_wins, two_cautions_losses, two_cautions_pnl, two_cautions_pnl_pct, two_cautions_win_rate = get_category_metrics(two_cautions_trades)
 
-            timestamp = get_ist_time().strftime("%I:%M %p IST, %b %d, %Y")
-            summary_msg = (
-                f"🔍 Scan at {timestamp}\n"
-                f"📊 Closed Trades:\n"
-                f"✅✅ Two Green ({two_green_count}, {two_green_wins}W/{two_green_losses}L, ${two_green_pnl:.2f}, {two_green_pnl_pct:.2f}%, {two_green_win_rate:.2f}%):\n"
-                f"  Rising:\n"
-                f"    Norm, ETH EMA9>21: {two_green_details['Rising']['Norm, ETH EMA9>21']['count']} (TP-{two_green_details['Rising']['Norm, ETH EMA9>21']['tp']}, SL-{two_green_details['Rising']['Norm, ETH EMA9>21']['sl']}, ${two_green_details['Rising']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Rising']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {two_green_details['Rising']['Norm, ETH EMA9<21']['count']} (TP-{two_green_details['Rising']['Norm, ETH EMA9<21']['tp']}, SL-{two_green_details['Rising']['Norm, ETH EMA9<21']['sl']}, ${two_green_details['Rising']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Rising']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {two_green_details['Rising']['Sell Press, ETH EMA9>21']['count']} (TP-{two_green_details['Rising']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_green_details['Rising']['Sell Press, ETH EMA9>21']['sl']}, ${two_green_details['Rising']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Rising']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {two_green_details['Rising']['Sell Press, ETH EMA9<21']['count']} (TP-{two_green_details['Rising']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_green_details['Rising']['Sell Press, ETH EMA9<21']['sl']}, ${two_green_details['Rising']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Rising']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {two_green_details['Rising']['Buy Press, ETH EMA9>21']['count']} (TP-{two_green_details['Rising']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_green_details['Rising']['Buy Press, ETH EMA9>21']['sl']}, ${two_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {two_green_details['Rising']['Buy Press, ETH EMA9<21']['count']} (TP-{two_green_details['Rising']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_green_details['Rising']['Buy Press, ETH EMA9<21']['sl']}, ${two_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"  Falling:\n"
-                f"    Norm, ETH EMA9>21: {two_green_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{two_green_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{two_green_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${two_green_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Falling']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {two_green_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{two_green_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{two_green_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${two_green_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {two_green_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{two_green_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_green_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${two_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {two_green_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{two_green_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_green_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${two_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {two_green_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{two_green_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_green_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${two_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {two_green_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{two_green_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_green_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${two_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"✅⚠️ One Green ({one_green_count}, {one_green_wins}W/{one_green_losses}L, ${one_green_pnl:.2f}, {one_green_pnl_pct:.2f}%, {one_green_win_rate:.2f}%):\n"
-                f"  Rising:\n"
-                f"    Norm, ETH EMA9>21: {one_green_details['Rising']['Norm, ETH EMA9>21']['count']} (TP-{one_green_details['Rising']['Norm, ETH EMA9>21']['tp']}, SL-{one_green_details['Rising']['Norm, ETH EMA9>21']['sl']}, ${one_green_details['Rising']['Norm, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Rising']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {one_green_details['Rising']['Norm, ETH EMA9<21']['count']} (TP-{one_green_details['Rising']['Norm, ETH EMA9<21']['tp']}, SL-{one_green_details['Rising']['Norm, ETH EMA9<21']['sl']}, ${one_green_details['Rising']['Norm, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Rising']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {one_green_details['Rising']['Sell Press, ETH EMA9>21']['count']} (TP-{one_green_details['Rising']['Sell Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Rising']['Sell Press, ETH EMA9>21']['sl']}, ${one_green_details['Rising']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Rising']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {one_green_details['Rising']['Sell Press, ETH EMA9<21']['count']} (TP-{one_green_details['Rising']['Sell Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Rising']['Sell Press, ETH EMA9<21']['sl']}, ${one_green_details['Rising']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Rising']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {one_green_details['Rising']['Buy Press, ETH EMA9>21']['count']} (TP-{one_green_details['Rising']['Buy Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Rising']['Buy Press, ETH EMA9>21']['sl']}, ${one_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Rising']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {one_green_details['Rising']['Buy Press, ETH EMA9<21']['count']} (TP-{one_green_details['Rising']['Buy Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Rising']['Buy Press, ETH EMA9<21']['sl']}, ${one_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Rising']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"  Falling:\n"
-                f"    Norm, ETH EMA9>21: {one_green_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {one_green_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {one_green_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {one_green_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {one_green_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{one_green_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{one_green_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${one_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {one_green_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {one_green_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{one_green_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${one_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {one_green_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"⚠️⚠️ Two Cautions ({two_cautions_count}, {two_cautions_wins}W/{two_cautions_losses}L, ${two_cautions_pnl:.2f}, {two_cautions_pnl_pct:.2f}%, {two_cautions_win_rate:.2f}%):\n"
-                f"  Rising:\n"
-                f"    Norm, ETH EMA9>21: {two_cautions_details['Rising']['Norm, ETH EMA9>21']['count']} (TP-{two_cautions_details['Rising']['Norm, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Rising']['Norm, ETH EMA9>21']['sl']}, ${two_cautions_details['Rising']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Rising']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {two_cautions_details['Rising']['Norm, ETH EMA9<21']['count']} (TP-{two_cautions_details['Rising']['Norm, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Rising']['Norm, ETH EMA9<21']['sl']}, ${two_cautions_details['Rising']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Rising']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {two_cautions_details['Rising']['Sell Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Rising']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Rising']['Sell Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Rising']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Rising']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {two_cautions_details['Rising']['Sell Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Rising']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Rising']['Sell Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Rising']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Rising']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {two_cautions_details['Rising']['Buy Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Rising']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Rising']['Buy Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Rising']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Rising']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {two_cautions_details['Rising']['Buy Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Rising']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Rising']['Buy Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Rising']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Rising']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"  Falling:\n"
-                f"    Norm, ETH EMA9>21: {two_cautions_details['Falling']['Norm, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Norm, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Norm, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Norm, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Norm, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Norm, ETH EMA9<21: {two_cautions_details['Falling']['Norm, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Norm, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Norm, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9>21: {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Sell Press, ETH EMA9<21: {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Sell Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9>21: {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9>21']['pnl_pct']:.2f}%)\n"
-                f"    Buy Press, ETH EMA9<21: {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['count']} (TP-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['tp']}, SL-{two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['sl']}, ${two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl']:.2f}, {two_cautions_details['Falling']['Buy Press, ETH EMA9<21']['pnl_pct']:.2f}%)\n"
-                f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
-                f"📈 Cum. PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
-                f"🏆 Top: {top_symbol_name or 'None'}, ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
-                f"🔄 Open: {len(open_trades)}\n"
-                f"📊 ETH/USDT: {eth_price_change:+.2f}%"
-                f"{f' (${eth_start_price:.2f}→${eth_end_price:.2f})' if eth_start_price and eth_end_price else ''}"
-            )
-            send_telegram(summary_msg)
-            send_telegram(f"Open trades after scan: {len(open_trades)}")
-            logger.info(f"Sent summary at {get_ist_time().strftime('%H:%M:%S')}")
-            closed_trades.clear()
-        except Exception as e:
-            logger.error(f"Scan loop error: {e}")
-            time.sleep(5)
+        total_pnl = two_green_pnl + one_green_pnl + two_cautions_pnl
+        total_pnl_pct = two_green_pnl_pct + one_green_pnl_pct + two_cautions_pnl_pct
+        cumulative_pnl = total_pnl
+        cumulative_pnl_pct = total_pnl_pct
+
+        if all_closed_trades:
+            symbol_pnl = {}
+            for trade in all_closed_trades:
+                sym = trade['symbol']
+                symbol_pnl[sym] = symbol_pnl.get(sym, 0) + trade['pnl']
+            top_symbol = max(symbol_pnl.items(), key=lambda x: x[1], default=(None, 0))
+            top_symbol_name, top_symbol_pnl = top_symbol
+            top_symbol_pnl_pct = sum(t['pnl_pct'] for t in all_closed_trades if t['symbol'] == top_symbol_name)
+        else:
+            top_symbol_name, top_symbol_pnl, top_symbol_pnl_pct = None, 0, 0
+
+        timestamp = get_ist_time().strftime("%I:%M %p IST, %B %d, %Y")
+        summary_msg = (
+            f"🔍 Scan Completed at {timestamp}\n"
+            f"📊 Trade Summary (Closed Trades):\n"
+            f"- ✅✅ Two Green Ticks: {two_green_count} trades (Wins: {two_green_wins}, Losses: {two_green_losses}), PnL: ${two_green_pnl:.2f} ({two_green_pnl_pct:.2f}%), Win Rate: {two_green_win_rate:.2f}%\n"
+            f"- ✅⚠️ One Green, One Caution: {one_green_count} trades (Wins: {one_green_wins}, Losses: {one_green_losses}), PnL: ${one_green_pnl:.2f} ({one_green_pnl_pct:.2f}%), Win Rate: {one_green_win_rate:.2f}%\n"
+            f"- ⚠️⚠️ Two Cautions: {two_cautions_count} trades (Wins: {two_cautions_wins}, Losses: {two_cautions_losses}), PnL: ${two_cautions_pnl:.2f} ({two_cautions_pnl_pct:.2f}%), Win Rate: {two_cautions_win_rate:.2f}%\n"
+            f"💰 Total PnL: ${total_pnl:.2f} ({total_pnl_pct:.2f}%)\n"
+            f"📈 Cumulative PnL: ${cumulative_pnl:.2f} ({cumulative_pnl_pct:.2f}%)\n"
+            f"🏆 Top Symbol: {top_symbol_name or 'None'} with ${top_symbol_pnl:.2f} ({top_symbol_pnl_pct:.2f}%)\n"
+            f"🔄 Open Trades: {num_open}"
+        )
+        send_telegram(summary_msg)
+        send_telegram(f"Number of open trades after scan: {num_open}")
+
+        closed_trades = []
 
 # === FLASK ===
 @app.route('/')
 def home():
     return "✅ Rising & Falling Three Pattern Bot is Live!"
 
-@app.route('/test_proxy')
-def test_proxy():
-    try:
-        start_time = time.time()
-        response = requests.get('https://api.binance.com/api/v3/exchangeInfo', proxies=proxies, timeout=5)
-        latency = time.time() - start_time
-        logger.info(f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds")
-        return f"Proxy test: Status {response.status_code}, Latency {latency:.2f} seconds"
-    except Exception as e:
-        logger.error(f"Proxy test failed: {str(e)}")
-        return f"Proxy test failed: {str(e)}"
-
 # === RUN ===
 def run_bot():
     load_trades()
     num_open = len(open_trades)
-    startup_msg = f"BOT STARTED\nOpen trades: {num_open}"
+    startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
     threading.Thread(target=scan_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
