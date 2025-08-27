@@ -41,8 +41,8 @@ RSI_OVERSOLD = 30
 # === PROXY CONFIGURATION ===
 PROXY_HOST = '45.38.107.97'
 PROXY_PORT = '6014'
-PROXY_USERNAME = 'cuutljtv'
-PROXY_PASSWORD = 'r2xyolpql2yh'
+PROXY_USERNAME = 'xlgrzqki'
+PROXY_PASSWORD = 'afvurlw3oeor'
 proxies = {
     "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
     "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
