@@ -25,7 +25,7 @@ MAX_WORKERS = 10
 BATCH_DELAY = 1.0
 NUM_CHUNKS = 8
 CAPITAL = 10.0
-SL_PCT = 1.0 / 100
+SL_PCT = 1.5 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -38,7 +38,7 @@ CATEGORY_PRIORITY = {
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 80
 RSI_OVERSOLD = 30
-BODY_SIZE_THRESHOLD = 10.0  # Threshold for body size (<=10% or >10%)
+BODY_SIZE_THRESHOLD = 0.1  # Updated threshold for body size (<=0.1% or >0.1%)
 
 # === PROXY CONFIGURATION ===
 PROXY_HOST = '45.38.107.97'
@@ -260,25 +260,60 @@ def check_tp_sl():
             with trade_lock:
                 for sym, trade in list(open_trades.items()):
                     try:
-                        ticker = exchange.fetch_ticker(sym)
-                        last = round_price(sym, ticker['last'])
-                        pnl = 0
                         hit = ""
-                        if trade['side'] == 'buy':
-                            if last >= trade['tp']:
-                                pnl = (trade['tp'] - trade['entry']) / trade['entry'] * 100
-                                hit = "✅ TP hit"
-                            elif last <= trade['sl']:
-                                pnl = (trade['sl'] - trade['entry']) / trade['entry'] * 100
-                                hit = "❌ SL hit"
-                        else:
-                            if last <= trade['tp']:
-                                pnl = (trade['entry'] - trade['tp']) / trade['entry'] * 100
-                                hit = "✅ TP hit"
-                            elif last >= trade['sl']:
-                                pnl = (trade['entry'] - trade['sl']) / trade['entry'] * 100
-                                hit = "❌ SL hit"
+                        pnl = 0
+                        hit_price = None
+
+                        entry_time = trade.get('entry_time')
+                        if entry_time:
+                            # Fetch 1m candles since entry for double-checking which hit first
+                            candles_1m = exchange.fetch_ohlcv(sym, '1m', since=entry_time, limit=2880)  # Up to 2 days
+                            for c in candles_1m:
+                                high = c[2]
+                                low = c[3]
+                                if trade['side'] == 'buy':
+                                    if high >= trade['tp']:
+                                        hit = "✅ TP hit"
+                                        hit_price = trade['tp']
+                                        break
+                                    if low <= trade['sl']:
+                                        hit = "❌ SL hit"
+                                        hit_price = trade['sl']
+                                        break
+                                else:
+                                    if low <= trade['tp']:
+                                        hit = "✅ TP hit"
+                                        hit_price = trade['tp']
+                                        break
+                                    if high >= trade['sl']:
+                                        hit = "❌ SL hit"
+                                        hit_price = trade['sl']
+                                        break
+
+                        if not hit:
+                            # Fallback to current price check if no historical hit
+                            ticker = exchange.fetch_ticker(sym)
+                            last = round_price(sym, ticker['last'])
+                            if trade['side'] == 'buy':
+                                if last >= trade['tp']:
+                                    hit = "✅ TP hit"
+                                    hit_price = trade['tp']
+                                elif last <= trade['sl']:
+                                    hit = "❌ SL hit"
+                                    hit_price = trade['sl']
+                            else:
+                                if last <= trade['tp']:
+                                    hit = "✅ TP hit"
+                                    hit_price = trade['tp']
+                                elif last >= trade['sl']:
+                                    hit = "❌ SL hit"
+                                    hit_price = trade['sl']
+
                         if hit:
+                            if trade['side'] == 'buy':
+                                pnl = (hit_price - trade['entry']) / trade['entry'] * 100
+                            else:
+                                pnl = (trade['entry'] - hit_price) / trade['entry'] * 100
                             logging.info(f"TP/SL hit for {sym}: {hit}, PnL: {pnl:.2f}%")
                             profit = CAPITAL * pnl / 100
                             closed_trade = {
@@ -457,7 +492,8 @@ def scan_loop():
                                 'category': category,
                                 'first_candle_analysis': first_candle_analysis,
                                 'pressure_status': pressure_status,
-                                'body_pct': body_pct  # Store body_pct for later use
+                                'body_pct': body_pct,
+                                'entry_time': int(time.time() * 1000)
                             }
                             open_trades[symbol] = trade
                             save_trades()
@@ -489,7 +525,8 @@ def scan_loop():
                                             'category': category,
                                             'first_candle_analysis': first_candle_analysis,
                                             'pressure_status': pressure_status,
-                                            'body_pct': body_pct
+                                            'body_pct': body_pct,
+                                            'entry_time': int(time.time() * 1000)
                                         }
                                         open_trades[symbol] = trade
                                         save_trades()
