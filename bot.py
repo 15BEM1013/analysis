@@ -43,8 +43,8 @@ BODY_SIZE_THRESHOLD = 0.1  # Updated threshold for body size (<=0.1% or >0.1%)
 # === PROXY CONFIGURATION ===
 PROXY_HOST = '45.38.107.97'
 PROXY_PORT = '6014'
-PROXY_USERNAME = 'xlgrzqki'
-PROXY_PASSWORD = 'afvurlw3oeor'
+PROXY_USERNAME = 'vjautpgi'
+PROXY_PASSWORD = 'rfvep83upfiy'
 proxies = {
     "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}",
     "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
