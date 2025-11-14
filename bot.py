@@ -25,7 +25,10 @@ MAX_WORKERS = 10
 BATCH_DELAY = 1.0
 NUM_CHUNKS = 8
 CAPITAL = 10.0
-SL_PCT = 1.5 / 100
+SL_PCT = 4.5 / 100  # Stop Loss at 4.5%
+TP_PCT = 1.0 / 100  # Take Profit at 1%
+DCA_LEVELS = 2  # Only 2 DCA levels
+DCA_MULTIPLIER = 2  # Multiplier for DCA size
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -38,7 +41,7 @@ CATEGORY_PRIORITY = {
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 80
 RSI_OVERSOLD = 30
-BODY_SIZE_THRESHOLD = 0.1  # Updated threshold for body size (<=0.1% or >0.1%)
+BODY_SIZE_THRESHOLD = 0.1  # Threshold for body size (<=0.1% or >0.1%)
 
 # === PROXY CONFIGURATION ===
 PROXY_HOST = '45.38.107.97'
@@ -66,9 +69,9 @@ def save_trades():
     try:
         with open(TRADE_FILE, 'w') as f:
             json.dump(open_trades, f, default=str)
-        print(f"Trades saved to {TRADE_FILE}")
+        logging.info(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
-        print(f"Error saving trades: {e}")
+        logging.error(f"Error saving trades: {e}")
 
 def load_trades():
     global open_trades
@@ -77,9 +80,9 @@ def load_trades():
             with open(TRADE_FILE, 'r') as f:
                 loaded = json.load(f)
                 open_trades = {k: v for k, v in loaded.items()}
-            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+            logging.info(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
     except Exception as e:
-        print(f"Error loading trades: {e}")
+        logging.error(f"Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
@@ -91,9 +94,9 @@ def save_closed_trades(closed_trade):
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
             json.dump(all_closed_trades, f, default=str)
-        print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
+        logging.info(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
-        print(f"Error saving closed trades: {e}")
+        logging.error(f"Error saving closed trades: {e}")
 
 def load_closed_trades():
     try:
@@ -102,7 +105,7 @@ def load_closed_trades():
                 return json.load(f)
         return []
     except Exception as e:
-        print(f"Error loading closed trades: {e}")
+        logging.error(f"Error loading closed trades: {e}")
         return []
 
 # === TELEGRAM ===
@@ -111,10 +114,10 @@ def send_telegram(msg):
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
         response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        print(f"Telegram sent: {msg}")
+        logging.info(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
-        print(f"Telegram error: {e}")
+        logging.error(f"Telegram error: {e}")
         return None
 
 def edit_telegram_message(message_id, new_text):
@@ -122,9 +125,9 @@ def edit_telegram_message(message_id, new_text):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
         requests.post(url, data=data, timeout=5, proxies=proxies)
-        print(f"Telegram updated: {new_text}")
+        logging.info(f"Telegram updated: {new_text}")
     except Exception as e:
-        print(f"Edit error: {e}")
+        logging.error(f"Edit error: {e}")
 
 # === INIT ===
 exchange = ccxt.binance({
@@ -202,7 +205,7 @@ def round_price(symbol, price):
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
     except Exception as e:
-        print(f"Error rounding price for {symbol}: {e}")
+        logging.error(f"Error rounding price for {symbol}: {e}")
         return price
 
 # === PATTERN DETECTION ===
@@ -263,35 +266,68 @@ def check_tp_sl():
                         hit = ""
                         pnl = 0
                         hit_price = None
+                        dca_level = trade.get('dca_level', 0)
+                        entry_price = trade['entry']
+                        total_invested = trade.get('total_invested', CAPITAL)
+                        total_qty = trade.get('total_qty', CAPITAL / entry_price)
 
                         entry_time = trade.get('entry_time')
-                        if entry_time:
-                            # Fetch 1m candles since entry for double-checking which hit first
-                            candles_1m = exchange.fetch_ohlcv(sym, '1m', since=entry_time, limit=2880)  # Up to 2 days
-                            for c in candles_1m:
-                                high = c[2]
-                                low = c[3]
-                                if trade['side'] == 'buy':
-                                    if high >= trade['tp']:
-                                        hit = "✅ TP hit"
-                                        hit_price = trade['tp']
+                        candles_1m = exchange.fetch_ohlcv(sym, '1m', since=entry_time, limit=2880)
+                        for c in candles_1m:
+                            high = c[2]
+                            low = c[3]
+                            if trade['side'] == 'buy':
+                                if high >= trade['tp']:
+                                    hit = "✅ TP hit"
+                                    hit_price = trade['tp']
+                                    break
+                                if low <= trade['sl']:
+                                    if dca_level < DCA_LEVELS:
+                                        dca_price = round_price(sym, low)
+                                        dca_qty = (CAPITAL * DCA_MULTIPLIER) / dca_price
+                                        total_invested += CAPITAL * DCA_MULTIPLIER
+                                        total_qty += dca_qty
+                                        new_avg_entry = total_invested / total_qty
+                                        trade['entry'] = new_avg_entry
+                                        trade['total_invested'] = total_invested
+                                        trade['total_qty'] = total_qty
+                                        trade['dca_level'] = dca_level + 1
+                                        trade['sl'] = round_price(sym, new_avg_entry * (1 - SL_PCT))
+                                        trade['tp'] = round_price(sym, new_avg_entry * (1 + TP_PCT))
+                                        logging.info(f"DCA {dca_level + 1} applied for {sym} at {dca_price}")
+                                        save_trades()
                                         break
-                                    if low <= trade['sl']:
+                                    else:
                                         hit = "❌ SL hit"
                                         hit_price = trade['sl']
                                         break
-                                else:
-                                    if low <= trade['tp']:
-                                        hit = "✅ TP hit"
-                                        hit_price = trade['tp']
+                            else:
+                                if low <= trade['tp']:
+                                    hit = "✅ TP hit"
+                                    hit_price = trade['tp']
+                                    break
+                                if high >= trade['sl']:
+                                    if dca_level < DCA_LEVELS:
+                                        dca_price = round_price(sym, high)
+                                        dca_qty = (CAPITAL * DCA_MULTIPLIER) / dca_price
+                                        total_invested += CAPITAL * DCA_MULTIPLIER
+                                        total_qty += dca_qty
+                                        new_avg_entry = total_invested / total_qty
+                                        trade['entry'] = new_avg_entry
+                                        trade['total_invested'] = total_invested
+                                        trade['total_qty'] = total_qty
+                                        trade['dca_level'] = dca_level + 1
+                                        trade['sl'] = round_price(sym, new_avg_entry * (1 + SL_PCT))
+                                        trade['tp'] = round_price(sym, new_avg_entry * (1 - TP_PCT))
+                                        logging.info(f"DCA {dca_level + 1} applied for {sym} at {dca_price}")
+                                        save_trades()
                                         break
-                                    if high >= trade['sl']:
+                                    else:
                                         hit = "❌ SL hit"
                                         hit_price = trade['sl']
                                         break
 
                         if not hit:
-                            # Fallback to current price check if no historical hit
                             ticker = exchange.fetch_ticker(sym)
                             last = round_price(sym, ticker['last'])
                             if trade['side'] == 'buy':
@@ -299,59 +335,133 @@ def check_tp_sl():
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
                                 elif last <= trade['sl']:
-                                    hit = "❌ SL hit"
-                                    hit_price = trade['sl']
+                                    if dca_level < DCA_LEVELS:
+                                        dca_price = last
+                                        dca_qty = (CAPITAL * DCA_MULTIPLIER) / dca_price
+                                        total_invested += CAPITAL * DCA_MULTIPLIER
+                                        total_qty += dca_qty
+                                        new_avg_entry = total_invested / total_qty
+                                        trade['entry'] = new_avg_entry
+                                        trade['total_invested'] = total_invested
+                                        trade['total_qty'] = total_qty
+                                        trade['dca_level'] = dca_level + 1
+                                        trade['sl'] = round_price(sym, new_avg_entry * (1 - SL_PCT))
+                                        trade['tp'] = round_price(sym, new_avg_entry * (1 + TP_PCT))
+                                        logging.info(f"DCA {dca_level + 1} applied for {sym} at {dca_price}")
+                                        save_trades()
+                                        continue
+                                    else:
+                                        hit = "❌ SL hit"
+                                        hit_price = trade['sl']
                             else:
                                 if last <= trade['tp']:
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
                                 elif last >= trade['sl']:
-                                    hit = "❌ SL hit"
-                                    hit_price = trade['sl']
+                                    if dca_level < DCA_LEVELS:
+                                        dca_price = last
+                                        dca_qty = (CAPITAL * DCA_MULTIPLIER) / dca_price
+                                        total_invested += CAPITAL * DCA_MULTIPLIER
+                                        total_qty += dca_qty
+                                        new_avg_entry = total_invested / total_qty
+                                        trade['entry'] = new_avg_entry
+                                        trade['total_invested'] = total_invested
+                                        trade['total_qty'] = total_qty
+                                        trade['dca_level'] = dca_level + 1
+                                        trade['sl'] = round_price(sym, new_avg_entry * (1 + SL_PCT))
+                                        trade['tp'] = round_price(sym, new_avg_entry * (1 - TP_PCT))
+                                        logging.info(f"DCA {dca_level + 1} applied for {sym} at {dca_price}")
+                                        save_trades()
+                                        continue
+                                    else:
+                                        hit = "❌ SL hit"
+                                        hit_price = trade['sl']
 
                         if hit:
                             if trade['side'] == 'buy':
-                                pnl = (hit_price - trade['entry']) / trade['entry'] * 100
+                                pnl = (hit_price - trade['entry']) * total_qty
                             else:
-                                pnl = (trade['entry'] - hit_price) / trade['entry'] * 100
-                            logging.info(f"TP/SL hit for {sym}: {hit}, PnL: {pnl:.2f}%")
-                            profit = CAPITAL * pnl / 100
+                                pnl = (trade['entry'] - hit_price) * total_qty
+                            pnl_pct = (pnl / total_invested) * 100
+                            outcome = (
+                                "Perfect" if hit == "✅ TP hit" and dca_level == 0 else
+                                "DCA1" if hit == "✅ TP hit" and dca_level == 1 else
+                                "DCA2" if hit == "✅ TP hit" and dca_level == 2 else
+                                "SL"
+                            )
                             closed_trade = {
                                 'symbol': sym,
-                                'pnl': profit,
-                                'pnl_pct': pnl,
+                                'pnl': pnl,
+                                'pnl_pct': pnl_pct,
                                 'category': trade['category'],
                                 'ema_status': trade['ema_status'],
                                 'pressure_status': trade['pressure_status'],
                                 'hit': hit,
-                                'body_pct': trade['body_pct']  # Include body_pct for closed trade
+                                'body_pct': trade['body_pct'],
+                                'dca_level': dca_level,
+                                'outcome': outcome,
+                                'close_time': int(time.time() * 1000)
                             }
                             closed_trades.append(closed_trade)
                             save_closed_trades(closed_trade)
-                            ema_status = trade['ema_status']
                             new_msg = (
                                 f"{sym} - {'RISING' if trade['side'] == 'buy' else 'FALLING'} PATTERN\n"
-                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                                f"{'Above' if trade['side'] == 'buy' else 'Below'} 21 ema - {trade['ema_status']['price_ema21']}\n"
+                                f"ema 9 {'above' if trade['side'] == 'buy' else 'below'} 21 - {trade['ema_status']['ema9_ema21']}\n"
                                 f"First small candle: {trade['first_candle_analysis']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}: {'✅' if 'TP' in hit else ''}\n"
                                 f"sl - {trade['sl']}: {'❌' if 'SL' in hit else ''}\n"
-                                f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
+                                f"Profit/Loss: {pnl_pct:.2f}% (${pnl:.2f})\n"
+                                f"Outcome: {outcome}\n{hit}"
                             )
                             trade['msg'] = new_msg
                             trade['hit'] = hit
-                            logging.info(f"Updating Telegram message for {sym}: {hit}")
                             edit_telegram_message(trade['msg_id'], new_msg)
                             del open_trades[sym]
                             save_trades()
-                            logging.info(f"Trade closed for {sym}")
+                            logging.info(f"Trade closed for {sym}: {hit}, Outcome: {outcome}")
                     except Exception as e:
                         logging.error(f"TP/SL check error on {sym}: {e}")
             time.sleep(TP_SL_CHECK_INTERVAL)
         except Exception as e:
             logging.error(f"TP/SL loop error: {e}")
             time.sleep(5)
+
+# === HOURLY PNL SUMMARY ===
+def hourly_pnl_summary():
+    while True:
+        try:
+            now = get_ist_time()
+            if now.minute == 0:
+                all_closed_trades = load_closed_trades()
+                one_hour_ago = int((time.time() - 3600) * 1000)
+                recent_trades = [t for t in all_closed_trades if t.get('close_time', 0) >= one_hour_ago]
+
+                total_trades = len(recent_trades)
+                perfect_trades = sum(1 for t in recent_trades if t['outcome'] == 'Perfect')
+                dca1_trades = sum(1 for t in recent_trades if t['outcome'] == 'DCA1')
+                dca2_trades = sum(1 for t in recent_trades if t['outcome'] == 'DCA2')
+                sl_trades = sum(1 for t in recent_trades if t['outcome'] == 'SL')
+                hourly_pnl = sum(t['pnl'] for t in recent_trades)
+                hourly_pnl_pct = sum(t['pnl_pct'] for t in recent_trades)
+
+                timestamp = now.strftime("%I:%M %p IST, %B %d, %Y")
+                summary_msg = (
+                    f"🕒 Hourly PnL Summary at {timestamp}\n"
+                    f"📊 Total Trades: {total_trades}\n"
+                    f"✅ Perfect Trades (No DCA): {perfect_trades}\n"
+                    f"📈 DCA1 Hit Trades: {dca1_trades}\n"
+                    f"📈 DCA2 Hit Trades: {dca2_trades}\n"
+                    f"❌ SL Hit Trades: {sl_trades}\n"
+                    f"💰 Hourly PnL: ${hourly_pnl:.2f} ({hourly_pnl_pct:.2f}%)\n"
+                    f"🔄 Open Trades: {len(open_trades)}"
+                )
+                send_telegram(summary_msg)
+            time.sleep(60)
+        except Exception as e:
+            logging.error(f"Hourly summary error: {e}")
+            time.sleep(60)
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
@@ -372,7 +482,6 @@ def process_symbol(symbol, alert_queue):
 
         signal_time = candles[-2][0]
         entry_price = round_price(symbol, candles[-2][4])
-        big_candle_close = round_price(symbol, candles[-4][4])
 
         if detect_rising_three(candles):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'rising')
@@ -385,6 +494,7 @@ def process_symbol(symbol, alert_queue):
                 send_telegram(msg)
                 return
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
+            tp = round_price(symbol, entry_price * (1 + TP_PCT))
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
@@ -406,11 +516,11 @@ def process_symbol(symbol, alert_queue):
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {big_candle_close}\n"
+                f"tp - {tp}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, 'buy', entry_price, big_candle_close, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct']))
+            alert_queue.put((symbol, msg, ema_status, category, 'buy', entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct']))
 
         elif detect_falling_three(candles):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
@@ -423,6 +533,7 @@ def process_symbol(symbol, alert_queue):
                 send_telegram(msg)
                 return
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
+            tp = round_price(symbol, entry_price * (1 - TP_PCT))
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
@@ -444,16 +555,16 @@ def process_symbol(symbol, alert_queue):
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
-                f"tp - {big_candle_close}\n"
+                f"tp - {tp}\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, 'sell', entry_price, big_candle_close, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct']))
+            alert_queue.put((symbol, msg, ema_status, category, 'sell', entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct']))
 
     except ccxt.RateLimitExceeded:
         time.sleep(5)
     except Exception as e:
-        print(f"Error on {symbol}: {e}")
+        logging.error(f"Error on {symbol}: {e}")
 
 # === PROCESS BATCH ===
 def process_batch(symbols, alert_queue):
@@ -467,7 +578,7 @@ def scan_loop():
     global closed_trades
     load_trades()
     symbols = get_symbols()
-    print(f"🔍 Scanning {len(symbols)} Binance Futures symbols...")
+    logging.info(f"🔍 Scanning {len(symbols)} Binance Futures symbols...")
     alert_queue = queue.Queue()
 
     chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
@@ -493,7 +604,10 @@ def scan_loop():
                                 'first_candle_analysis': first_candle_analysis,
                                 'pressure_status': pressure_status,
                                 'body_pct': body_pct,
-                                'entry_time': int(time.time() * 1000)
+                                'entry_time': int(time.time() * 1000),
+                                'dca_level': 0,
+                                'total_invested': CAPITAL,
+                                'total_qty': CAPITAL / entry_price
                             }
                             open_trades[symbol] = trade
                             save_trades()
@@ -526,7 +640,10 @@ def scan_loop():
                                             'first_candle_analysis': first_candle_analysis,
                                             'pressure_status': pressure_status,
                                             'body_pct': body_pct,
-                                            'entry_time': int(time.time() * 1000)
+                                            'entry_time': int(time.time() * 1000),
+                                            'dca_level': 0,
+                                            'total_invested': CAPITAL,
+                                            'total_qty': CAPITAL / entry_price
                                         }
                                         open_trades[symbol] = trade
                                         save_trades()
@@ -547,22 +664,23 @@ def scan_loop():
 
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp_sl, daemon=True).start()
+    threading.Thread(target=hourly_pnl_summary, daemon=True).start()
 
     while True:
         next_close = get_next_candle_close()
         wait_time = max(0, next_close - time.time())
-        print(f"⏳ Waiting {wait_time:.1f} seconds for next 15m candle close...")
+        logging.info(f"⏳ Waiting {wait_time:.1f} seconds for next 15m candle close...")
         time.sleep(wait_time)
 
         for i, chunk in enumerate(symbol_chunks):
-            print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
+            logging.info(f"Processing batch {i+1}/{NUM_CHUNKS}...")
             process_batch(chunk, alert_queue)
             if i < NUM_CHUNKS - 1:
                 time.sleep(BATCH_DELAY)
 
-        print("✅ Scan complete.")
+        logging.info("✅ Scan complete.")
         num_open = len(open_trades)
-        print(f"📊 Number of open trades: {num_open}")
+        logging.info(f"📊 Number of open trades: {num_open}")
 
         all_closed_trades = load_closed_trades()
         two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
@@ -570,11 +688,9 @@ def scan_loop():
         two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
 
         def get_pressure_metrics(trades):
-            # Split trades by body size
             small_body_trades = [t for t in trades if t['body_pct'] <= BODY_SIZE_THRESHOLD]
             large_body_trades = [t for t in trades if t['body_pct'] > BODY_SIZE_THRESHOLD]
 
-            # Further split by pressure status
             small_neutral_trades = [t for t in small_body_trades if t['pressure_status'] == 'neutral']
             small_selling_trades = [t for t in small_body_trades if t['pressure_status'] == 'selling_pressure']
             small_buying_trades = [t for t in small_body_trades if t['pressure_status'] == 'buying_pressure']
