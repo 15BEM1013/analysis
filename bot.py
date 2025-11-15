@@ -14,43 +14,51 @@ import talib
 import numpy as np
 import logging
 
-# ====================== CONFIG ======================
+# === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
 TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
-
-# Anti-ban settings
-MAX_WORKERS = 3
-BATCH_DELAY = 8.0
+MAX_WORKERS = 5
+BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
-TP_CHECK_INTERVAL = 60
-
-# Trading parameters
 CAPITAL = 20.0
-LEVERAGE = 10
-TP_PCT = 0.01          # 1%
-SL_PCT = 0.045         # 4.5% FIXED
-ADD_LEVELS = [(0.015, 20.0), (0.030, 20.0)]   # 1.5% → +$20, 3% → +$20
-
+LEVERAGE = 5
+TP_PCT = 1.0 / 100
+SL_PCT = 4.5 / 100  # Fixed 4.5% forever
+TP_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
+MAX_OPEN_TRADES = 5
 RSI_PERIOD = 14
 BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
+ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 0.0)]
+ACCOUNT_SIZE = 1000.0
 
-# Proxy list (keep yours)
+# === EMOJI SYSTEM (Exactly as you wanted) ===
+EMOJI_TWO_GREEN = "Two Green Ticks"
+EMOJI_ONE_MIXED = "One Green Tick, One Yellow Light"
+EMOJI_TWO_CAUTION = "Two Yellow Lights"
+EMOJI_NEUTRAL = "Neutral"
+EMOJI_SELLING = "Selling Pressure"
+EMOJI_BUYING = "Buying Pressure"
+
+# === PROXY CONFIGURATION ===
 PROXY_LIST = [
     {'host': '142.111.48.253', 'port': 7030, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    # ... (rest of your proxies)
+    {'host': '31.59.20.176',    'port': 6754, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '23.95.150.145',   'port': 6114, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '198.23.239.134',  'port': 6540, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '45.38.107.97',    'port': 6014, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '107.172.163.27',  'port': 6543, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '64.137.96.74',    'port': 6641, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '216.10.27.159',   'port': 6837, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '142.111.67.146',  'port': 5611, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '142.147.128.93',  'port': 6593, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
 ]
-
-# ====================== SETUP ======================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-trade_lock = threading.Lock()
-app = Flask(__name__)
 
 def get_proxy_config(proxy):
     return {
@@ -58,361 +66,358 @@ def get_proxy_config(proxy):
         "https": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
     }
 
-def initialize_exchange():
-    for proxy in PROXY_LIST:
-        try:
-            proxies = get_proxy_config(proxy)
-            exchange = ccxt.binance({
-                'options': {'defaultType': 'future'},
-                'proxies': proxies,
-                'enableRateLimit': True,
-            })
-            exchange.load_markets()
-            logging.info(f"Connected via proxy {proxy['host']}")
-            return exchange, proxies
-        except:
-            continue
-    # Fallback direct
-    exchange = ccxt.binance({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
-    exchange.load_markets()
-    return exchange, None
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+trade_lock = threading.Lock()
 
-exchange, proxies = initialize_exchange()
-
-open_trades = {}
-sent_signals = {}
-last_summary_time = 0
-
-# ====================== HELPERS ======================
 def get_ist_time():
-    return datetime.now(pytz.timezone('Asia/Kolkata'))
+    ist = pytz.timezone('Asia/Kolkata')
+    return datetime.now(ist)
 
+# === PERSISTENCE ===
+def save_trades():
+    with trade_lock:
+        try:
+            with open(TRADE_FILE, 'w') as f:
+                json.dump(open_trades, f, default=str)
+        except Exception as e:
+            print(f"Save error: {e}")
+
+def load_trades():
+    global open_trades
+    try:
+        if os.path.exists(TRADE_FILE):
+            with open(TRADE_FILE, 'r') as f:
+                open_trades = json.load(f)
+    except: open_trades = {}
+
+def save_closed_trade(trade):
+    try:
+        trades = []
+        if os.path.exists(CLOSED_TRADE_FILE):
+            with open(CLOSED_TRADE_FILE, 'r') as f:
+                trades = json.load(f)
+        trades.append(trade)
+        with open(CLOSED_TRADE_FILE, 'w') as f:
+            json.dump(trades, f, default=str)
+    except Exception as e:
+        print(f"Closed save error: {e}")
+
+# === TELEGRAM ===
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg, 'disable_web_page_preview': True}
     try:
-        r = requests.post(url, data=data, proxies=proxies, timeout=10)
-        return r.json().get('result', {}).get('message_id')
-    except:
-        return None
+        response = requests.post(url, data=data, timeout=10, proxies=proxies).json()
+        return response.get('result', {}).get('message_id')
+    except: return None
 
 def edit_telegram_message(msg_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': msg_id, 'text': new_text, 'disable_web_page_preview': True}
     try:
-        requests.post(url, data=data, proxies=proxies, timeout=10)
-    except:
-        pass
+        requests.post(url, data=data, timeout=10, proxies=proxies)
+    except: pass
 
+# === EXCHANGE INIT ===
+def initialize_exchange():
+    for proxy in PROXY_LIST:
+        try:
+            proxies = get_proxy_config(proxy)
+            session = requests.Session()
+            exchange = ccxt.binance({
+                'options': {'defaultType': 'future'},
+                'proxies': proxies,
+                'enableRateLimit': True,
+                'session': session
+            })
+            exchange.load_markets()
+            return exchange, proxies
+        except: continue
+    # Fallback
+    exchange = ccxt.binance({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
+    exchange.load_markets()
+    return exchange, None
+
+app = Flask(__name__)
+sent_signals = {}
+open_trades = {}
+last_summary_time = 0
+
+try:
+    exchange, proxies = initialize_exchange()
+except: exit(1)
+
+# === HELPERS ===
+def is_bullish(c): return c[4] > c[1]
+def is_bearish(c): return c[4] < c[1]
+def body_pct(c): return abs(c[4] - c[1]) / c[1] * 100
 def round_price(symbol, price):
     try:
         market = exchange.market(symbol)
         tick_size = float(market['info']['filters'][0]['tickSize'])
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
-    except:
-        return round(price, 8)
-
-def save_trades():
-    with trade_lock:
-        with open(TRADE_FILE, 'w') as f:
-            json.dump(open_trades, f, default=str)
-
-def load_trades():
-    global open_trades
-    if os.path.exists(TRADE_FILE):
-        with open(TRADE_FILE, 'r') as f:
-            open_trades = json.load(f)
-
-def save_closed_trade(trade):
-    trades = []
-    if os.path.exists(CLOSED_TRADE_FILE):
-        with open(CLOSED_TRADE_FILE, 'r') as f:
-            trades = json.load(f)
-    trades.append(trade)
-    with open(CLOSED_TRADE_FILE, 'w') as f:
-        json.dump(trades, f, default=str)
-
-# ====================== PATTERN & ANALYSIS ======================
-def is_bullish(c): return c[4] > c[1]
-def is_bearish(c): return c[4] < c[1]
-def body_pct(c): return abs(c[4] - c[1]) / c[1] * 100
+    except: return price
 
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
     if len(closes) < period: return None
-    ema = sum(closes[:period]) / period
     multiplier = 2 / (period + 1)
-    for price in closes[period:]:
-        ema = (price - ema) * multiplier + ema
+    ema = sum(closes[:period]) / period
+    for close in closes[period:]:
+        ema = (close - ema) * multiplier + ema
     return ema
 
 def calculate_rsi(candles, period=14):
     closes = np.array([c[4] for c in candles])
-    if len(closes) < period + 1: return None
+    if len(closes) < period: return None
     return talib.RSI(closes, timeperiod=period)[-1]
 
+def analyze_first_small_candle(candle, pattern_type):
+    body = body_pct(candle)
+    upper_wick = (candle[2] - max(candle[1], candle[4])) / candle[1] * 100
+    lower_wick = (min(candle[1], candle[4]) - candle[3]) / candle[1] * 100
+    wick_ratio = upper_wick / lower_wick if lower_wick > 0 else float('inf')
+    wick_ratio_reverse = lower_wick / upper_wick if upper_wick > 0 else float('inf')
+
+    if body < 0.1:
+        if pattern_type == 'rising' and wick_ratio >= 2.5:
+            return {'text': f"{EMOJI_SELLING}", 'status': 'selling_pressure', 'body_pct': body}
+        elif pattern_type == 'rising' and wick_ratio_reverse >= 2.5:
+            return {'text': f"{EMOJI_BUYING}", 'status': 'buying_pressure', 'body_pct': body}
+        elif pattern_type == 'falling' and wick_ratio_reverse >= 2.5:
+            return {'text': f"{EMOJI_BUYING}", 'status': 'buying_pressure', 'body_pct': body}
+        elif pattern_type == 'falling' and wick_ratio >= 2.5:
+            return {'text': f"{EMOJI_SELLING}", 'status': 'selling_pressure', 'body_pct': body}
+    return {'text': f"{EMOJI_NEUTRAL}", 'status': 'neutral', 'body_pct': body}
+
+# === PATTERN DETECTION ===
 def detect_rising_three(candles):
-    if len(candles) < 25: return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_vol = sum(c[5] for c in candles[-6:-1]) / 5
-    return (is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_vol and
-            all(is_bearish(c) and body_pct(c) <= MAX_SMALL_BODY_PCT and c[5] < c2[5] for c in [c1, c0]))
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
+    big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+    small_red_1 = is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+    small_red_0 = is_bearish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+    return big_green and small_red_1 and small_red_0
 
 def detect_falling_three(candles):
-    if len(candles) < 25: return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_vol = sum(c[5] for c in candles[-6:-1]) / 5
-    return (is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_vol and
-            all(is_bullish(c) and body_pct(c) <= MAX_SMALL_BODY_PCT and c[5] < c2[5] for c in [c1, c0]))
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
+    big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
+    small_green_1 = is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+    small_green_0 = is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+    return big_red and small_green_1 and small_green_0
 
-# ====================== MESSAGE BUILDERS ======================
-def build_initial_message(symbol, side, entry, tp, sl):
-    direction = "BUY" if side == "buy" else "SELL"
-    dca1_price = round_price(symbol, entry * (1 - 0.015) if side == "buy" else entry * (1 + 0.015))
-    dca2_price = round_price(symbol, entry * (1 - 0.030) if side == "buy" else entry * (1 + 0.030))
-    sign = "-" if side == "buy" else "+"
-    msg = f"{symbol} - {direction}\n" \
-          f"Entry: {entry}\n" \
-          f"Invested: $20 / $60\n" \
-          f"Leverage: 10x\n\n" \
-          f"DCA1 @ {dca1_price} ({sign}1.5%) → +$20\n" \
-          f"DCA2 @ {dca2_price} ({sign}3.0%) → +$20\n\n" \
-          f"TP: {tp} (+1%)\n" \
-          f"SL: {sl} (-4.5%) ← fixed"
-    return msg
+def get_symbols():
+    markets = exchange.load_markets()
+    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active')]
 
-def build_updated_message(trade):
-    symbol = trade['symbol']
-    side = trade['side']
-    direction = "BUY" if side == "buy" else "SELL"
-    entry = trade['initial_entry']
-    invested = trade['total_invested']
-    avg_entry = trade['average_entry']
-    tp = trade['tp']
-    sl = trade['fixed_sl']
-    adds = trade['adds_done']
+def get_next_candle_close():
+    now = get_ist_time()
+    seconds = now.minute * 60 + now.second
+    seconds_to_next = (15 * 60) - (seconds % (15 * 60))
+    if seconds_to_next < 5:
+        seconds_to_next += 15 * 60
+    return time.time() + seconds_to_next
 
-    status = ""
-    if adds == 0:
-        status = ""
-    elif adds == 1:
-        status = "→ DCA1 added"
-    else:
-        status = "→ fully loaded"
-
-    dca_lines = []
-    for i, (pct, _) in enumerate(ADD_LEVELS):
-        price = round_price(symbol, entry * (1 - pct) if side == "buy" else entry * (1 + pct))
-        done = "Done" if i < adds else ""
-        dca_lines.append(f"DCA{i+1} → +$20 {done}")
-
-    msg = f"{symbol} - {direction}\n" \
-          f"Entry: {entry} {status}\n" \
-          f"Invested: ${invested} / $60\n" \
-          f"Leverage: 10x\n\n" \
-          f"{chr(10).join(dca_lines)}\n\n" \
-          f"TP: {tp} (+1%)\n" \
-          f"SL: {sl} (-4.5%) ← fixed"
-    return msg
-
-# ====================== TP/SL + DCA CHECK ======================
-def check_tp_sl():
-    global open_trades
+# === TP/SL CHECK + DCA + DURATION TRACKING ===
+def check_tp():
     while True:
         time.sleep(TP_CHECK_INTERVAL)
         with trade_lock:
             for sym, trade in list(open_trades.items()):
                 try:
                     ticker = exchange.fetch_ticker(sym)
-                    price = ticker['last']
+                    current_price = ticker['last']
+                    entry_time = trade['entry_time']
+                    duration_sec = int(time.time() * 1000) - entry_time
+                    hours = duration_sec // 3600000
+                    minutes = (duration_sec % 3600000) // 60000
+                    duration_str = f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
-                    # DCA logic
-                    added = False
-                    for i, (pct, amount) in enumerate(ADD_LEVELS):
-                        if trade['adds_done'] > i:
-                            continue
-                        trigger_price = trade['initial_entry'] * (1 - pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + pct)
-                        if (trade['side'] == 'buy' and price <= trigger_price) or (trade['side'] == 'sell' and price >= trigger_price):
-                            # Add DCA
-                            new_qty = trade['quantity'] + amount / price
-                            new_avg = (trade['quantity'] * trade['average_entry'] + amount) / new_qty
-                            new_tp = round_price(sym, new_avg * (1 + TP_PCT) if trade['side'] == 'buy' else new_avg * (1 - TP_PCT))
+                    # DCA Logic
+                    if trade['adds_done'] < 2:
+                        for i, (pct, amount) in enumerate(ADD_LEVELS[:2]):
+                            if trade['adds_done'] > i: continue
+                            trigger_price = trade['initial_entry'] * (1 - pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + pct)
+                            if (trade['side'] == 'buy' and current_price <= trigger_price) or (trade['side'] == 'sell' and current_price >= trigger_price):
+                                new_qty = trade['quantity'] + amount / current_price
+                                new_avg = (trade['quantity'] * trade['average_entry'] + amount) / new_qty
+                                new_tp = round_price(sym, new_avg * (1 + TP_PCT) if trade['side'] == 'buy' else new_avg * (1 - TP_PCT))
+                                trade.update({
+                                    'adds_done': i + 1,
+                                    'quantity': new_qty,
+                                    'average_entry': new_avg,
+                                    'total_invested': trade['total_invested'] + amount,
+                                    'tp': new_tp,
+                                    'dca_messages': trade['dca_messages'] + [f"DCA{i+1} @ {current_price:.4f}"]
+                                })
+                                send_update(sym, trade)
+                                save_trades()
 
-                            trade['adds_done'] += 1
-                            trade['total_invested'] += amount
-                            trade['quantity'] = new_qty
-                            trade['average_entry'] = new_avg
-                            trade['tp'] = new_tp
-                            added = True
+                    # Fixed SL Check (4.5% from initial entry)
+                    sl_price = trade['initial_entry'] * (1 - SL_PCT) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + SL_PCT)
+                    tp_hit = (trade['side'] == 'buy' and current_price >= trade['tp']) or (trade['side'] == 'sell' and current_price <= trade['tp'])
+                    sl_hit = (trade['side'] == 'buy' and current_price <= sl_price) or (trade['side'] == 'sell' and current_price >= sl_price)
 
-                    if added:
-                        edit_telegram_message(trade['msg_id'], build_updated_message(trade))
-                        save_trades()
-                        continue
-
-                    # TP/SL check
-                    hit = None
-                    hit_price = price
-                    if (trade['side'] == 'buy' and price >= trade['tp']) or (trade['side'] == 'sell' and price <= trade['tp']):
-                        hit = "TP"
-                    elif (trade['side'] == 'buy' and price <= trade['fixed_sl']) or (trade['side'] == 'sell' and price >= trade['fixed_sl']):
-                        hit = "SL"
-
-                    if hit:
-                        duration_min = int((time.time() * 1000 - trade['entry_time']) / 60000)
-                        pnl_pct = (price - trade['average_entry']) / trade['average_entry'] * 100 if trade['side'] == 'buy' else (trade['average_entry'] - price) / trade['average_entry'] * 100
-                        pnl_leveraged = pnl_pct * LEVERAGE
-                        profit = trade['total_invested'] * pnl_leveraged / 100
-
-                        emoji = "TP hit" if hit == "TP" else "SL hit"
-                        final_msg = f"{sym} - {'BUY' if trade['side']=='buy' else 'SELL'} {emoji}\n" \
-                                    f"Duration: {duration_min} min\n" \
-                                    f"Exit: {hit_price}\n" \
-                                    f"Profit: {pnl_leveraged:+.2f}% (${profit:+.2f})\n" \
-                                    f"Invested: ${trade['total_invested']}\n" \
-                                    f"Hit: {hit} hit"
-
+                    if tp_hit or sl_hit:
+                        hit_type = "TP hit" if tp_hit else "SL hit"
+                        pnl_pct = (current_price - trade['average_entry']) / trade['average_entry'] * 100 * (1 if trade['side'] == 'buy' else -1)
+                        profit = trade['total_invested'] * (pnl_pct * LEVERAGE / 100)
+                        final_msg = f"{trade['emoji_category']} {sym} - {'BUY' if trade['side']=='buy' else 'SELL'} CLOSED\n" \
+                                    f"Exit: {hit_type} @ {current_price:.4f}\n" \
+                                    f"Profit: {profit:+.2f} ({pnl_pct*LEVERAGE:+.2f}%)\n" \
+                                    f"Duration: {duration_str}"
                         edit_telegram_message(trade['msg_id'], final_msg)
-
-                        # Save closed trade
-                        closed = {
-                            'symbol': sym,
-                            'side': trade['side'],
-                            'profit': profit,
-                            'pnl_pct': pnl_leveraged,
-                            'category': trade['category'],
-                            'hit': hit,
-                            'adds_done': trade['adds_done'],
-                            'duration_min': duration_min,
-                            'timestamp': int(time.time())
-                        }
-                        save_closed_trade(closed)
+                        save_closed_trade({**trade, 'pnl': profit, 'duration': duration_str, 'hit': hit_type})
                         del open_trades[sym]
                         save_trades()
-
                 except Exception as e:
                     logging.error(f"Check error {sym}: {e}")
 
-# ====================== HOURLY SUMMARY ======================
-def send_hourly_summary():
-    global last_summary_time
-    while True:
-        if time.time() - last_summary_time >= SUMMARY_INTERVAL:
-            trades = []
-            if os.path.exists(CLOSED_TRADE_FILE):
-                with open(CLOSED_TRADE_FILE, 'r') as f:
-                    all_closed = json.load(f)
-                    start = last_summary_time
-                    trades = [t for t in all_closed if t['timestamp'] >= start]
-
-            if not trades:
-                last_summary_time = time.time()
-                continue
-
-            total_profit = sum(t['profit'] for t in trades)
-            cats = {'two_green': [], 'one_green': [], 'two_cautions': []}
-            for t in trades:
-                cats[t.get('category', 'two_cautions')].append(t)
-
-            lines = [f"Hourly PNL Summary ({get_ist_time().strftime('%H:%M')} - {(get_ist_time().strftime('%H:%M'))})\n",
-                     f"Total Profit: ${total_profit:+.2f}\n"]
-
-            for name, label in [('two_green', '2 Green signals'), ('one_green', '1 Green + 1 Caution'), ('two_cautions', '2 Caution signals')]:
-                lst = cats[name]
-                if not lst: continue
-                profit = sum(t['profit'] for t in lst)
-                tp = sum(1 for t in lst if t['hit'] == 'TP')
-                sl = len(lst) - tp
-                dca2 = sum(1 for t in lst if t['adds_done'] >= 2)
-                dca1_only = sum(1 for t in lst if t['adds_done'] == 1)
-                dca_text = "2 took DCA2" if dca2 else ("1 took only DCA1" if dca1_only else "no DCA")
-                lines.append(f"{label}: → {len(lst)} trades | ${profit:+.2f} | {tp} TP, {sl} SL | {dca_text}")
-
-            send_telegram("\n".join(lines))
-            last_summary_time = time.time()
-        time.sleep(60)
-
-# ====================== SCAN LOOP ======================
-def process_symbol(symbol, q):
+# === SIGNAL PROCESSING ===
+def process_symbol(symbol, alert_queue):
     try:
         candles = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=30)
         if len(candles) < 25: return
 
         ema21 = calculate_ema(candles, 21)
         ema9 = calculate_ema(candles, 9)
-        if ema21 is None or ema9 is None: return
+        if not ema21 or not ema9: return
 
-        close_prev = candles[-2][4]
+        close_prev = candles[-3][4]
+        close_curr = candles[-2][4]
         signal_time = candles[-2][0]
 
         if detect_rising_three(candles):
+            analysis = analyze_first_small_candle(candles[-3], 'rising')
+            if analysis['body_pct'] > BODY_SIZE_THRESHOLD: return
             if sent_signals.get((symbol, 'rising')) == signal_time: return
             sent_signals[(symbol, 'rising')] = signal_time
+
+            price_above_ema21 = close_prev > ema21
+            ema9_above_ema21 = ema9 > ema21
+            green_count = sum([price_above_ema21, ema9_above_ema21])
+            category_emoji = EMOJI_TWO_GREEN if green_count == 2 else EMOJI_ONE_MIXED if green_count == 1 else EMOJI_TWO_CAUTION
             side = 'sell'
-            category = 'two_green' if close_prev > ema21 and ema9 > ema21 else 'one_green' if (close_prev > ema21 or ema9 > ema21) else 'two_cautions'
+            entry = close_curr
+            tp = round_price(symbol, entry * (1 - TP_PCT))
+            sl_fixed = round_price(symbol, entry * (1 + SL_PCT))
+
+            msg = f"{category_emoji} {symbol} - SELL\n" \
+                  f"{analysis['text']}\n" \
+                  f"Entry: {entry}\n" \
+                  f"TP: {tp}\n" \
+                  f"SL: {sl_fixed} (Fixed 4.5%)"
+
+            alert_queue.put((symbol, msg, side, entry, tp, sl_fixed, category_emoji, analysis['text']))
+
         elif detect_falling_three(candles):
+            analysis = analyze_first_small_candle(candles[-3], 'falling')
+            if analysis['body_pct'] > BODY_SIZE_THRESHOLD: return
             if sent_signals.get((symbol, 'falling')) == signal_time: return
             sent_signals[(symbol, 'falling')] = signal_time
+
+            price_below_ema21 = close_prev < ema21
+            ema9_below_ema21 = ema9 < ema21
+            green_count = sum([price_below_ema21, ema9_below_ema21])
+            category_emoji = EMOJI_TWO_GREEN if green_count == 2 else EMOJI_ONE_MIXED if green_count == 1 else EMOJI_TWO_CAUTION
             side = 'buy'
-            category = 'two_green' if close_prev < ema21 and ema9 < ema21 else 'one_green' if (close_prev < ema21 or ema9 < ema21) else 'two_cautions'
-        else:
-            return
+            entry = close_curr
+            tp = round_price(symbol, entry * (1 + TP_PCT))
+            sl_fixed = round_price(symbol, entry * (1 - SL_PCT))
 
-        entry = round_price(symbol, close_prev)
-        tp = round_price(symbol, entry * (1 + TP_PCT) if side == 'buy' else entry * (1 - TP_PCT))
-        sl = round_price(symbol, entry * (1 - SL_PCT) if side == 'buy' else entry * (1 + SL_PCT))
+            msg = f"{category_emoji} {symbol} - BUY\n" \
+                  f"{analysis['text']}\n" \
+                  f"Entry: {entry}\n" \
+                  f"TP: {tp}\n" \
+                  f"SL: {sl_fixed} (Fixed 4.5%)"
 
-        msg = build_initial_message(symbol, side, entry, tp, sl)
-        msg_id = send_telegram(msg)
-
-        if msg_id:
-            with trade_lock:
-                open_trades[symbol] = {
-                    'symbol': symbol,
-                    'side': side,
-                    'initial_entry': entry,
-                    'average_entry': entry,
-                    'tp': tp,
-                    'fixed_sl': sl,
-                    'total_invested': CAPITAL,
-                    'quantity': CAPITAL / entry,
-                    'adds_done': 0,
-                    'msg_id': msg_id,
-                    'category': category,
-                    'entry_time': int(time.time() * 1000)
-                }
-            save_trades()
+            alert_queue.put((symbol, msg, side, entry, tp, sl_fixed, category_emoji, analysis['text']))
 
     except Exception as e:
-        logging.error(f"Error {symbol}: {e}")
+        pass
 
+# === HOURLY SUMMARY ===
+def send_hourly_summary():
+    global last_summary_time
+    if time.time() - last_summary_time < SUMMARY_INTERVAL: return
+    last_summary_time = time.time()
+    try:
+        trades = json.load(open(CLOSED_TRADE_FILE)) if os.path.exists(CLOSED_TRADE_FILE) else []
+        last_hour = time.time() - 3600
+        recent = [t for t in trades if t.get('close_time', 0) / 1000 > last_hour]
+
+        stats = {EMOJI_TWO_GREEN: {'tp':0, 'sl':0, 'pnl':0}, 
+                 EMOJI_ONE_MIXED: {'tp':0, 'sl':0, 'pnl':0}, 
+                 EMOJI_TWO_CAUTION: {'tp':0, 'sl':0, 'pnl':0}}
+
+        for t in recent:
+            cat = t.get('emoji_category', EMOJI_TWO_CAUTION)
+            if cat not in stats: continue
+            pnl = t.get('pnl', 0)
+            hit = t.get('hit', '')
+            stats[cat]['pnl'] += pnl
+            if 'TP' in hit: stats[cat]['tp'] += 1
+            if 'SL' in hit: stats[cat]['sl'] += 1
+
+        msg = f"HOURLY SUMMARY ({get_ist_time().strftime('%d %b %H:%M')} IST)\n\n"
+        total_pnl = sum(s['pnl'] for s in stats.values())
+        msg += f"Closed: {len(recent)} | PnL: ${total_pnl:+.2f}\n\n"
+        for emoji, s in stats.items():
+            if s['tp'] + s['sl'] == 0: continue
+            msg += f"{emoji}\n→ {s['tp']} TP | {s['sl']} SL | ${s['pnl']:+.2f}\n"
+        msg += f"\nOpen trades: {len(open_trades)}/5"
+        send_telegram(msg)
+    except: pass
+
+# === MAIN LOOP ===
 def scan_loop():
     load_trades()
-    symbols = [s for s in exchange.load_markets() if 'USDT' in s and exchange.markets[s]['contract'] and exchange.markets[s]['active']]
-    chunks = [symbols[i::NUM_CHUNKS] for i in range(NUM_CHUNKS)]
+    symbols = get_symbols()
+    chunks = [symbols[i:i + len(symbols)//NUM_CHUNKS + 1] for i in range(0, len(symbols), len(symbols)//NUM_CHUNKS)]
+    alert_queue = queue.Queue()
+
+    def alert_handler():
+        while True:
+            try:
+                sym, msg, side, entry, tp, sl, emoji_cat, pressure = alert_queue.get(timeout=1)
+                with trade_lock:
+                    if len(open_trades) >= MAX_OPEN_TRADES:
+                        continue
+                    mid = send_telegram(msg)
+                    if mid:
+                        open_trades[sym] = {
+                            'side': side, 'initial_entry': entry, 'average_entry': entry,
+                            'tp': tp, 'sl_fixed': sl, 'msg_id': mid, 'emoji_category': emoji_cat,
+                            'pressure': pressure, 'entry_time': int(time.time()*1000),
+                            'quantity': CAPITAL/entry, 'total_invested': CAPITAL,
+                            'adds_done': 0, 'dca_messages': [], 'close_time': 0
+                        }
+                        save_trades()
+            except queue.Empty:
+                send_hourly_summary()
+                time.sleep(1)
+
+    threading.Thread(target=alert_handler, daemon=True).start()
+    threading.Thread(target=check_tp, daemon=True).start()
 
     while True:
-        next_close = time.time() + (900 - (time.time() % 900)) + 5
-        time.sleep(max(0, next_close - time.time()))
-
-        q = queue.Queue()
+        time.sleep(max(0, get_next_candle_close() - time.time()))
         for chunk in chunks:
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as exec:
                 for sym in chunk:
-                    exec.submit(process_symbol, sym, q)
+                    exec.submit(process_symbol, sym, alert_queue)
             time.sleep(BATCH_DELAY)
 
-        logging.info("Scan completed")
-
-# ====================== START ======================
 @app.route('/')
-def home():
-    return "Bot is running!"
+def home(): return "Bot is running with Two Green Ticks & Fixed 4.5% SL!"
+
+def run_bot():
+    load_trades()
+    send_telegram(f"BOT STARTED\nOpen trades: {len(open_trades)}")
+    threading.Thread(target=scan_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=8080)
 
 if __name__ == "__main__":
-    threading.Thread(target=check_tp_sl, daemon=True).start()
-    threading.Thread(target=send_hourly_summary, daemon=True).start()
-    threading.Thread(target=scan_loop, daemon=True).start()
-    send_telegram("Bot started – taking every signal!")
-    app.run(host='0.0.0.0', port=8080)
+    run_bot()
