@@ -15,7 +15,7 @@ import numpy as np
 import logging
 
 # === CONFIG ===
-BOT_TOKEN = '7994008649:AAHrEbuC6TUgMQacLXVqjH3O70ZpYiiiCo0'
+BOT_TOKEN = '8514655243:AAFzoZxutaZPbcBtVDEnzpLOQwp-_bsMZyw'
 CHAT_ID = '655537138'
 TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
