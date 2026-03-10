@@ -6,6 +6,9 @@ python-dateutil
 pytz
 numpy
 python-telegram-bot
+aiohttp
+python-dotenv
+pytz
 pandas
 TA-Lib
 redis
